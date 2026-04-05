@@ -3,7 +3,7 @@ title: "glowing_wave"
 format: html
 ---
 
-Monterey Bay beaked whale seasonal presence
+# Monterey Bay beaked whale seasonal presence
 
 ```{r}
 #| label: setup
@@ -400,4 +400,56 @@ ggplot() +
         panel.grid.minor = element_blank()) +
   ggtitle("Monterey Bay Seasonal Patterns") + 
   labs(color = NULL)
+```
+
+# Zc presence across CA Current
+
+```{r}
+#southern california bight
+scb_bw <- rbind(
+  read_csv("~/Downloads/SiteN_Zc_monthly_bin.csv") %>% 
+    mutate(site = "N"),
+  read_csv("~/Downloads/SiteH_Zc_monthly_bin.csv") %>% 
+    mutate(site = "H")
+) %>% 
+  mutate(date = dmy(bin),
+         month = month(date),
+         year = year(date),
+         site = factor(site)) %>% 
+  arrange(site, date) %>% 
+  drop_na(Zc_pres_eff_adj) %>% 
+  group_by(site)
+
+sri_data <- read_csv(here::here(c("data/othersites/channel_islands/SOCAL_W_01_WW_encounterTimes_Ziphius_cavirostris.csv", 
+                  "data/othersites/channel_islands/SOCAL_W_02_WW_encounterTimes_Ziphius_cavirostris.csv", 
+                  "data/othersites/channel_islands/SOCAL_W_03_WW_encounterTimes_Ziphius_cavirostris.csv",
+                  "data/othersites/channel_islands/SOCAL_W_04_WW_encounterTimes_Ziphius_cavirostris.csv", 
+                  "data/othersites/channel_islands/SOCAL_W_05_WW_encounterTimes_Ziphius_cavirostris.csv"))) 
+
+#double check that this method is okay for this dataset! 
+sri_effort <- sri_data %>%
+  mutate(date = dmy_hms(endEnc), 
+         month = month(date),
+         year = year(date)) %>% 
+  mutate(sampled = TRUE)
+
+sri_bw <- sri_data %>% 
+    mutate(mins = as.numeric(encDur) / 60, 
+           date = dmy_hms(endEnc), 
+           year = year(date), 
+           month = month(date)) %>% 
+  group_by(year, month) %>% 
+  summarize(total_mins = sum(mins), 
+            avg_mins = mean(mins)) %>% 
+  ungroup() %>% 
+  complete(year = 2021:2023, month = 1:12, fill = list(total_mins = 0, avg_mins = NA)) %>% 
+  left_join(sri_effort, by = c("year", "month")) %>%
+  mutate(sampled = replace_na(sampled, FALSE))
+
+#oregon
+oregon_bw <- read_csv(here::here("data/othersites/monthly_presence_zc_oregon.csv")) %>% 
+  mutate(date = ymd(month_year), 
+         month = month(month_year),
+         year = year(month_year)) %>% 
+  arrange(date)
 ```
