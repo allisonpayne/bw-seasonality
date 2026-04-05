@@ -1,0 +1,666 @@
+---
+title: "glowingwave"
+format: html
+---
+
+Do goosebeaked whales travel up and down the US West Coast in a seasonal pattern?
+
+### BW Setup 
+
+from three sites: Southern CA Bight, Monterey Bay, and Newport, OR.
+
+```{r}
+#| message: false
+#| label: setup
+
+library(tidyverse)
+library(lubridate)
+library(cowplot)
+library(mgcv)
+source(here::here("R/bw_funcs.R"))
+
+#southern california bight
+scb_bw <- rbind(
+  read_csv("~/Downloads/SiteN_Zc_monthly_bin.csv") %>% 
+    mutate(site = "N"),
+  read_csv("~/Downloads/SiteH_Zc_monthly_bin.csv") %>% 
+    mutate(site = "H")
+) %>% 
+  mutate(date = dmy(bin),
+         month = month(date),
+         year = year(date),
+         site = factor(site)) %>% 
+  arrange(site, date) %>% 
+  drop_na(Zc_pres_eff_adj) %>% 
+  group_by(site)
+
+#monterey
+monterey_bw <- read_csv(here::here("data/zc_monterey.csv")) %>% 
+  mutate(date = ymd(Date), 
+         month = Month,
+         year = year(Date)) %>% 
+  arrange(date) %>% 
+  complete(year = 2017:2018, month = 1:12, fill = list(count = 0)) %>% 
+  distinct(year, month, count) %>% 
+  mutate(date = ISOdate(year, month, day = 15))
+
+#oregon
+oregon_bw <- read_csv(here::here("data/othersites/monthly_presence_zc_oregon.csv")) %>% 
+  mutate(date = ymd(month_year), 
+         month = month(month_year),
+         year = year(month_year)) %>% 
+  arrange(date) %>% 
+  complete(year = 2022, month = 1:12, fill = list(days_present = 0))
+```
+
+### Raw detections at each site. 
+
+```{r}
+#| label: raw-bw-data-plot
+#| fig-height: 12
+
+#scb
+scb_p1 <- ggplot(scb_bw, aes(factor(month), Zc_pres_eff_adj, color = site)) +
+  geom_boxplot() +
+  labs(x = "Month", 
+       y = "Zc presence (minutes)", 
+       title = "SCB") +
+  theme_bw() +
+  theme(legend.position = "top") 
+
+#monterey
+mb_p1 <- ggplot(monterey_bw, aes(factor(month), count)) +
+  geom_point(aes(color = factor(year))) +
+  labs(x = "Month", 
+       y = "Zc presence (days)", 
+       title = "MB") +
+  theme_bw()
+
+#oregon
+or_p1 <- ggplot(oregon_bw, aes(factor(month), days_present)) +
+  geom_point() +
+  labs(x = "Month", 
+       y = "Zc presence (days)", 
+       title = "OR") +
+  theme_bw()
+
+plot_grid(scb_p1, mb_p1, or_p1, nrow = 3, align = "h")
+```
+
+Fitting GAMS to show seasonal presence at each site.
+
+### SCB BW GAM
+
+```{r}
+#| label: scripps-gam
+
+scb_bw_mod <- gam(Zc_pres_eff_adj ~ 
+                    s(month, by = site, bs = "cc", k = 12) +
+                    site +
+                    s(year, bs = "re"),
+                  family = tw(link = "log"),
+                  data = scb_bw,
+                  method = "fREML",
+                  knots = list(month = c(1, 12)))
+
+summary(scb_bw_mod)
+gam.check(scb_bw_mod)
+acf(residuals(scb_bw_mod))
+
+# Residuals are autocorrelated, but for peak timing we don't care. Be careful about p-values etc.
+
+scb_bw_grid <- expand.grid(
+  month = seq(0, 13, by = 0.1),   # extend beyond 1-12
+  site  = unique(scb_bw$site),
+  year  = 0
+) %>% mutate(site = factor(site, levels = levels(scb_bw$site)))
+
+pred <- predict(scb_bw_mod,
+                newdata = scb_bw_grid,
+                exclude = "s(year)",
+                newdata.guaranteed = TRUE,
+                type = "link",
+                se.fit = TRUE)
+
+scb_bw_grid <- scb_bw_grid %>%
+  mutate(
+    fit = exp(pred$fit),
+    lwr = exp(pred$fit - 1.96 * pred$se.fit),
+    upr = exp(pred$fit + 1.96 * pred$se.fit)
+  ) %>% 
+  mutate(across(fit:upr, \(x) x / pracma::trapz(month, fit), .names = "{.col}_norm"))
+
+# Find peaks on extended grid, then fold month back to 1-12
+peaks <- scb_bw_grid %>%
+  group_by(site) %>%
+  group_modify(~ find_peaks(.x)) %>%
+  ungroup()
+
+peaks$fit_norm <- peaks$fit / pracma::trapz(scb_bw_grid$month, scb_bw_grid$fit)
+
+# Clip grid back to 1-12 for plotting
+scb_norm_plot <- ggplot(scb_bw_grid %>% filter(month >= 1, month <= 12), 
+       aes(x = month, y = fit_norm, color = site)) +
+  geom_ribbon(aes(ymin = lwr_norm, ymax = upr_norm, fill = site), alpha = 0.2, color = NA) +
+  geom_line(linewidth = 1) +
+  geom_point(data = peaks, aes(x = month, y = fit_norm, color = site),
+             size = 3, shape = 21, fill = "white", stroke = 1.5) +
+  scale_x_continuous(breaks = 1:12, labels = month.abb) +
+  facet_wrap(~ site, ncol = 1, scales = "free_y") +
+  theme_bw() +
+  theme(legend.position = "top") +
+  labs(x = NULL, y = "Zc presence", color = "Site", fill = "Site", 
+       title = "Southern California Bight | 33° N", 
+       subtitle = "2007-2020") 
+```
+
+### MB BW GAM
+
+```{r}
+#| label: mb-gam
+
+monterey_bw_mod <- gam(count ~ 
+                       s(month, bs = "cc", k = 12) +
+                       s(year, bs = "re"),
+                     family = tw(link = "log"),
+                     data = monterey_bw,
+                     method = "fREML")
+
+summary(monterey_bw_mod)
+gam.check(monterey_bw_mod)
+acf(residuals(monterey_bw_mod))
+
+monterey_bw_grid <- expand.grid(
+  month = seq(0, 13, by = 0.1),   # extend beyond 1-12
+  year  = 0)
+
+pred <- predict(monterey_bw_mod,
+                newdata = monterey_bw_grid,
+                exclude = "s(year)",
+                newdata.guaranteed = TRUE,
+                type = "link",
+                se.fit = TRUE)
+
+monterey_bw_grid <- monterey_bw_grid %>%
+  mutate(
+    fit = exp(pred$fit),
+    lwr = exp(pred$fit - 1.96 * pred$se.fit),
+    upr = exp(pred$fit + 1.96 * pred$se.fit)
+  ) %>% 
+  mutate(across(fit:upr, \(x) x / pracma::trapz(month, fit), .names = "{.col}_norm"))
+
+peaks_mb <-  find_peaks(monterey_bw_grid)
+peaks_mb$fit_norm <- peaks_mb$fit / pracma::trapz(monterey_bw_grid$month, monterey_bw_grid$fit)
+
+# Clip grid back to 1-12 for plotting
+mb_norm_plot <- ggplot(monterey_bw_grid %>% filter(month >= 1, month <= 12), 
+       aes(x = month, y = fit_norm)) +
+  # geom_ribbon(aes(ymin = lwr_norm, ymax = upr_norm), alpha = 0.2, color = NA) +
+  geom_line(linewidth = 1) +
+  geom_point(data = peaks_mb[2,], aes(x = month, y = fit_norm),
+             size = 3, shape = 21, fill = "white", stroke = 1.5) +
+  scale_x_continuous(breaks = 1:12, labels = month.abb) +
+  theme_bw() +
+  labs(x = NULL, 
+       y = "Zc presence", 
+       title = "Monterey Bay, California | 36° N", 
+       subtitle = "2017-2018") 
+```
+
+### OR BW GAM
+
+```{r}
+#| label: or-gam
+
+oregon_bw_mod <- gam(days_present ~ 
+                    s(month, bs = "cc", k = 12) +
+                    s(year, bs = "re"),
+                  family = tw(link = "log"),
+                  data = oregon_bw,
+                  method = "fREML")
+
+summary(oregon_bw_mod)
+gam.check(oregon_bw_mod)
+acf(residuals(oregon_bw_mod))
+
+oregon_bw_grid <- expand.grid(
+  month = seq(0, 13, by = 0.1),   # extend beyond 1-12
+  year  = 0)
+
+pred <- predict(oregon_bw_mod,
+                newdata = oregon_bw_grid,
+                exclude = "s(year)",
+                newdata.guaranteed = TRUE,
+                type = "link",
+                se.fit = TRUE)
+
+oregon_bw_grid <- oregon_bw_grid %>%
+  mutate(
+    fit = exp(pred$fit),
+    lwr = exp(pred$fit - 1.96 * pred$se.fit),
+    upr = exp(pred$fit + 1.96 * pred$se.fit)
+  ) %>% 
+  mutate(across(fit:upr, \(x) x / pracma::trapz(month, fit), .names = "{.col}_norm"))
+
+or_peaks <-  find_peaks(oregon_bw_grid)
+or_peaks$fit_norm <- or_peaks$fit / pracma::trapz(oregon_bw_grid$month, oregon_bw_grid$fit)
+
+# Clip grid back to 1-12 for plotting
+or_norm_plot <- ggplot(oregon_bw_grid %>% filter(month >= 1, month <= 12), 
+       aes(x = month, y = fit_norm)) +
+  # geom_ribbon(aes(ymin = lwr_norm, ymax = upr_norm), alpha = 0.2, color = NA) +
+  geom_line(linewidth = 1) +
+  geom_point(data = first(or_peaks), aes(x = month, y = fit_norm),
+             size = 3, shape = 21, fill = "white", stroke = 1.5) +
+  scale_x_continuous(breaks = 1:12, labels = month.abb) +
+  theme_bw() +
+  labs(x = NULL, 
+       y = "Zc presence", 
+       title = "Newport, Oregon | 45° N", 
+       subtitle = "2021-2022") 
+
+```
+
+### Wave plot
+
+```{r}
+#| label: wave-plot
+#| fig-height: 12
+
+
+plot_grid(or_norm_plot, mb_norm_plot, scb_norm_plot, nrow = 3, rel_heights = c(1, 1, 2))
+```
+
+Now we want to see if there is a relationship between Zc presence and environmental conditions. We'll use BEUTI, an index based on biological upwelling metrics.
+
+### BEUTI setup
+
+```{r}
+#| label: beuti-setup
+
+beuti <- read_csv(here::here("data/indices/BEUTI_06-25.csv")) %>% 
+  set_names(c("date", "latitude", "beuti")) %>% 
+  filter(latitude %in% c(33, 36, 45)) %>% 
+  mutate(month = month(date), 
+         year = year(date))
+
+scb_beuti <- filter(beuti, latitude == 33)
+mb_beuti <- filter(beuti, latitude == 36)
+or_beuti <- filter(beuti, latitude == 45)
+
+#climatology - gets at the long term average
+beuti_clim <- beuti %>% 
+  group_by(latitude, month) %>% 
+  summarize(beuti = mean(beuti))
+
+beuti_raw_plot <- beuti_clim %>% 
+  mutate(latitude = factor(latitude)) %>% 
+  ggplot(aes(month, 
+             beuti, 
+             color = latitude)) + 
+  geom_point() + 
+  geom_line() +
+  scale_x_continuous(breaks = 1:12) +
+  labs(x = "Month", y = "BEUTI") +
+  theme_bw() + 
+  theme(legend.position = c(0.98, 0.98),
+        legend.justification = c(1, 1), 
+        legend.background = element_rect(fill = "transparent"))
+
+beuti_clim_mod <- gam(beuti ~ 
+                        s(month, bs = "cc", k = 12) +
+                        s(year, bs = "re"),
+                      family = gaussian(),
+                      data = mb_beuti,
+                      method = "REML")
+summary(beuti_clim_mod)
+```
+
+### MB BEUTI GAM
+
+```{r}
+mb_beuti_grid <- expand.grid(
+  month = seq(0, 13, by = 0.1),   # extend beyond 1-12
+  year  = 0)
+
+pred <- predict(beuti_clim_mod,
+                newdata = mb_beuti_grid,
+                exclude = "s(year)",
+                newdata.guaranteed = TRUE,
+                type = "link",
+                se.fit = TRUE)
+
+mb_beuti_grid$beuti <- pred$fit
+mb_beuti_grid$lower <- pred$fit - pred$se.fit * 1.96
+mb_beuti_grid$upper <- pred$fit + pred$se.fit * 1.96
+
+mb_beuti_grid %>% 
+  filter(between(month, 1, 12)) %>% 
+  ggplot(aes(month, beuti)) + 
+  geom_ribbon(aes(ymin = lower, ymax = upper), alpha = 0.2) +
+  geom_line() + 
+  theme_classic() +
+  scale_x_continuous(breaks = 1:12) + 
+  ylim(-5, 20) + 
+  ggtitle("Monterey Bay")
+```
+
+### OR BEUTI GAM
+
+```{r}
+#fitting the gam for oregon beuti
+or_beuti_clim_mod <- gam(beuti ~ 
+                        s(month, bs = "cc", k = 12) +
+                        s(year, bs = "re"),
+                      family = gaussian(),
+                      data = or_beuti,
+                      method = "REML")
+summary(or_beuti_clim_mod)
+
+or_beuti_grid <- expand.grid(
+  month = seq(0, 13, by = 0.1),   # extend beyond 1-12
+  year  = 0)
+
+pred <- predict(or_beuti_clim_mod,
+                newdata = or_beuti_grid,
+                exclude = "s(year)",
+                newdata.guaranteed = TRUE,
+                type = "link",
+                se.fit = TRUE)
+
+or_beuti_grid$beuti <- pred$fit
+or_beuti_grid$lower <- pred$fit - pred$se.fit * 1.96
+or_beuti_grid$upper <- pred$fit + pred$se.fit * 1.96
+
+or_beuti_grid %>% 
+  filter(between(month, 1, 12)) %>% 
+  ggplot(aes(month, beuti)) + 
+  geom_ribbon(aes(ymin = lower, ymax = upper), alpha = 0.2) +
+  geom_line() + 
+  theme_classic() +
+  scale_x_continuous(breaks = 1:12) + 
+  ylim(-5, 20) + 
+  ggtitle("Oregon")
+```
+
+### SCB BEUTI GAM
+
+```{r}
+#fitting the gam for oregon beuti
+scb_beuti_clim_mod <- gam(beuti ~ 
+                        s(month, bs = "cc", k = 12) +
+                        s(year, bs = "re"),
+                      family = gaussian(),
+                      data = scb_beuti,
+                      method = "REML")
+
+scb_beuti_grid <- expand.grid(
+  month = seq(0, 13, by = 0.1),   # extend beyond 1-12
+  year  = 0)
+
+pred <- predict(scb_beuti_clim_mod,
+                newdata = scb_beuti_grid,
+                exclude = "s(year)",
+                newdata.guaranteed = TRUE,
+                type = "link",
+                se.fit = TRUE)
+
+scb_beuti_grid$beuti <- pred$fit
+scb_beuti_grid$lower <- pred$fit - pred$se.fit * 1.96
+scb_beuti_grid$upper <- pred$fit + pred$se.fit * 1.96
+
+scb_beuti_grid %>% 
+  filter(between(month, 1, 12)) %>% 
+  ggplot(aes(month, beuti)) + 
+  geom_ribbon(aes(ymin = lower, ymax = upper), alpha = 0.2) +
+  geom_line() + 
+  theme_classic() +
+  scale_x_continuous(breaks = 1:12) + 
+  ylim(-5, 20) + 
+  ggtitle("Southern California")
+```
+
+simulate curves for that bad boy
+
+```{r}
+n_sim <- 100
+Xp <- predict(beuti_clim_mod, newdata = mb_beuti_grid, type = "lpmatrix")
+coef_sims <- MASS::mvrnorm(n_sim, mu = coef(beuti_clim_mod), Sigma = vcov(beuti_clim_mod))
+sim_curves <- Xp %*% t(coef_sims)
+#will need to transform scale for beaked whale one: sim_curves_response <- gam_mod$family$linkinv(sim_curves)
+expand_grid(i = 1:nrow(mb_beuti_grid), 
+            j = 1:ncol(sim_curves)) %>% 
+  mutate(month = mb_beuti_grid$month[i], 
+         sim = j, 
+         beuti = sim_curves[cbind(i, j)]) %>% 
+  select(-c(i, j)) %>% 
+  ggplot(aes(month, beuti, group = sim)) + 
+  geom_line(alpha = 0.1)
+
+```
+
+```{r}
+
+scb_beuti_bw <- expand_grid(beuti, site = c("H", "N")) %>%
+  select(site, month, year, beuti) %>% 
+  mutate(site = as.character(site)) %>% 
+  full_join(scb_bw %>% mutate(site = as.character(site)),
+            by = c("month", "year", "site")) %>% 
+  arrange(year, month, site) %>% 
+  mutate(site = factor(site))
+
+scb_beuti_mod <- gam(Zc_pres_eff_adj ~ 
+                    s(beuti, by = site) +
+                    site +
+                    s(year, bs = "re"),
+                  family = tw(link = "log"),
+                  data = scb_beuti_bw,
+                  method = "fREML")
+
+scb_beuti_plot <- scb_beuti_bw %>% 
+  group_by(site) %>% 
+  # slice(-(1:max_lag)) %>% 
+  mutate(across(c(beuti, Zc_pres_eff_adj), 
+                \(x) (x - mean(x, na.rm = TRUE)) / sd(x, na.rm = TRUE))) %>% 
+  ungroup() %>% 
+  pivot_longer(c(beuti, Zc_pres_eff_adj), 
+               names_to = "var", 
+               values_to = "val") %>% 
+  ggplot(aes(date, val, color = var)) +
+  geom_line() +
+  facet_grid(rows = vars(site)) +
+  ggtitle("Southern California Bight (33°N)") +
+  theme_classic() +
+  theme(legend.position = "none", 
+        axis.title = element_blank(), 
+        plot.margin = margin(t = 15, r = 5, b = 15, l = 5)) 
+```
+
+```{r}
+max_lag <- 12
+lag_mods <- map(0:max_lag, \(.lag) {
+  lagged_beuti <- scb_beuti_bw %>% 
+    group_by(site) %>% 
+    mutate(beuti = lag(beuti, .lag)) %>% 
+    slice(-c(1:max_lag)) %>% 
+    ungroup()
+  gam(Zc_pres_eff_adj ~ 
+        s(beuti, by = site) +
+        site +
+        s(year, bs = "re"),
+      family = tw(link = "log"),
+      data = lagged_beuti,
+      method = "fREML")
+})
+lag_aic <- map_dbl(lag_mods, AIC)
+tibble(lag = 0:max_lag,
+       aic = lag_aic,
+       daic = lag_aic - min(lag_aic))
+
+#0 lag is best for socal
+```
+
+```{r}
+mb_beuti_bw <- beuti_clim %>%
+  filter(latitude == 36) %>% 
+  full_join(monterey_bw,
+            by = c("month")) 
+
+mb_beuti_mod <- gam(count ~ 
+                    s(beuti) +
+                    s(year, bs = "re"),
+                  family = tw(link = "log"),
+                  data = mb_beuti_bw,
+                  method = "fREML")
+
+mb_beuti_plot <- mb_beuti_bw %>% 
+  # slice(-(1:max_lag)) %>% 
+  mutate(across(c(beuti, count), 
+                \(x) (x - mean(x, na.rm = TRUE)) / sd(x, na.rm = TRUE))) %>% 
+  ungroup() %>% 
+  pivot_longer(c(beuti, count), 
+               names_to = "var", 
+               values_to = "val") %>% 
+  ggplot(aes(date, val, color = var)) +
+  geom_line() +
+  ggtitle("Monterey (36°N)") +
+  theme_classic() +
+  theme(legend.position = "none", 
+        axis.title = element_blank(), 
+        plot.margin = margin(t = 15, r = 5, b = 15, l = 5)) 
+```
+
+```{r}
+lag_mods_mb <- map(0:max_lag, \(.lag) {
+  mb_lagged_beuti <- mb_beuti_bw %>% 
+    mutate(beuti = lag(beuti, .lag)) %>% 
+    slice(-c(1:max_lag))
+  gam(count ~ 
+        s(beuti, k = 5) +
+        s(year, bs = "re"),
+      family = tw(link = "log"),
+      data = mb_lagged_beuti,
+      method = "fREML")
+})
+mb_lag_aic <- map_dbl(lag_mods_mb, AIC)
+tibble(lag = 0:max_lag,
+       aic = mb_lag_aic,
+       daic = mb_lag_aic - min(mb_lag_aic)) 
+
+#best lag for this is 6 months
+
+```
+
+```{r}
+or_beuti_bw <- beuti_clim %>%
+  filter(latitude == 45) %>% 
+  full_join(oregon_bw,
+            by = c("month")) 
+
+or_beuti_mod <- gam(days_present ~ 
+                    s(beuti) +
+                    s(year, bs = "re"),
+                  family = tw(link = "log"),
+                  data = or_beuti_bw,
+                  method = "fREML")
+
+or_beuti_plot <- or_beuti_bw %>% 
+  # slice(-(1:max_lag)) %>% 
+  mutate(across(c(beuti, days_present), 
+                \(x) (x - mean(x, na.rm = TRUE)) / sd(x, na.rm = TRUE))) %>% 
+  ungroup() %>% 
+  pivot_longer(c(beuti, days_present), 
+               names_to = "var", 
+               values_to = "val") %>% 
+  ggplot(aes(date, val, color = var)) +
+  geom_line() +
+  ggtitle("Oregon (45°N)") +
+  theme_classic() +
+  theme(legend.position = "none", 
+        axis.title = element_blank(), 
+        plot.margin = margin(t = 15, r = 5, b = 15, l = 5))
+```
+
+```{r}
+
+lag_mods_or <- map(0:max_lag, \(.lag) {
+  or_lagged_beuti <- or_beuti_bw %>% 
+    mutate(beuti = lag(beuti, .lag)) %>% 
+    slice(-c(1:max_lag))
+  #not enough data for a spline currently - add back in with more years
+  gam(days_present ~ 
+        beuti +
+        s(year, bs = "re"),
+      family = tw(link = "log"),
+      data = or_lagged_beuti,
+      method = "fREML")
+})
+or_lag_aic <- map_dbl(lag_mods_or, AIC)
+tibble(lag = 0:max_lag,
+       aic = or_lag_aic,
+       daic = or_lag_aic - min(or_lag_aic)) 
+
+#best lag for this is 7 months
+```
+
+```{r}
+site_beuti_plots <- cowplot::plot_grid(scb_beuti_plot, mb_beuti_plot, or_beuti_plot, 
+                                       ncol = 1, rel_heights = c(2, 1, 1))
+cowplot::plot_grid(beuti_raw_plot, site_beuti_plots,
+                   ncol = 2, rel_widths = c(1, 1))
+```
+
+```{r}
+#pretty sure this is not going to work
+# hci <- read_csv("data/indices/HCI.csv") %>% 
+#   mutate(time = lubridate::ym(time))
+# 
+# 
+# mb_hci <- hci %>% 
+#   filter(timeseries == "Monthly Habitat Compression Index over 35.5-40N")   
+# 
+# mb_hci %>% 
+#   filter(year > 2010) %>% 
+#   ggplot(aes(time, index, group = 1)) + 
+#   geom_line()
+```
+
+```{r}
+# beuti <- read_csv(here::here("data/indices/BEUTI_06-25.csv")) %>% 
+#   set_names(c("date", "latitude", "beuti")) %>% 
+#   filter(latitude %in% c(33, 36, 45)) %>% 
+#   mutate(month = month(date), 
+#          year = year(date))
+# 
+# #climatology - gets at the long term average
+# beuti_clim <- beuti %>% 
+#   group_by(latitude, month) %>% 
+#   summarize(beuti = mean(beuti))
+# 
+# beuti_clim %>% 
+#   mutate(latitude = factor(latitude)) %>% 
+#   ggplot(aes(month, 
+#              beuti, 
+#              color = latitude)) + 
+#   geom_point() + 
+#   geom_line() +
+#   theme_bw()
+
+```
+
+Summary stats
+
+```{r}
+monterey_bw %>% 
+  summarize(mean(count), 
+            sd(count))
+
+oregon_bw %>% 
+  summarize(mean(days_present), 
+            sd(days_present))
+
+scb_bw %>% 
+  group_by(site) %>% 
+  summarize(mean(Zc_pres_eff_adj), 
+            sd(Zc_pres_eff_adj))
+```
