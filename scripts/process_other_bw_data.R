@@ -30,31 +30,32 @@ zc_sri_raw <- read_csv(here::here(c(
 zc_sri_raw <- zc_sri_raw %>%
   mutate(startEnc = str_replace(startEnc, "-0022 ", "-2022 "))
 
-#calculating effort from Baggett et al 2025 metadata (table s1). 
-#note that i think there is an error in the endtime of deployment 2 - I think it should be May, not march.
+#calculating effort from Baggett et al 2025 metadata (table s1). note that i
+#think there is an error in the endtime of deployment 2 - I think it should be
+#May, not march.
 sri_deps <- read_csv(here::here("data/other_sites/SRI/sri_effort.csv"))
 sri_effort_parsed <- sri_deps %>% 
   mutate(dep_start = mdy(dep_start), 
-         dep_end = mdy(dep_end))
+         dep_end = mdy(dep_end)) %>% 
+  arrange(dep_start)
 
+#because an old deployment ends and a new one begins on the same day, it’s being
+#counted twice in the effort table. how do i fix this?
 sri_effort <- sri_effort_parsed %>% 
   rowwise() %>% #treats each row as its own group
   reframe( #like summarize but allows for multiple output rows
     deploy_id = deploy_id, 
-    month_start = floor_date(seq.Date(dep_start, dep_end, by = "month"), "month")
+    effort_day = seq.Date(dep_start, dep_end, by = "day")
   ) %>% 
-  left_join(sri_effort_parsed, by = "deploy_id") %>% 
-  mutate(
-    month_end    = ceiling_date(month_start, "month") - days(1),
-    active_start = pmax(dep_start, month_start),
-    active_end   = pmin(dep_end, month_end),
-    effort_days  = as.numeric(active_end - active_start) + 1
-  ) %>% 
-  mutate(year  = year(month_start),
-         month = month(month_start), 
-         total_days = days_in_month(make_date(year, month, 1)), 
-         effort_pct = effort_days / total_days) %>% 
-  select(deploy_id, year, month, effort_days, total_days, effort_pct)
+  mutate(year_month = floor_date(effort_day, unit = "months")) %>% 
+  group_by(year_month) %>% 
+  summarize(effort_days = n_distinct(effort_day)) %>% 
+  mutate(total_days = days_in_month(year_month), 
+         effort_pct = effort_days / total_days,
+         year = year(year_month),
+         month = month(year_month)) %>% 
+  select(-year_month) %>% 
+  relocate(year, month)
   
 zc_sri <- zc_sri_raw %>% 
   mutate(mins = as.numeric(encDur) / 60, 
@@ -63,10 +64,12 @@ zc_sri <- zc_sri_raw %>%
          month = month(date)) %>% 
   group_by(year, month) %>% 
   summarize(total_mins = sum(mins), 
-            avg_mins = mean(mins)) %>% 
+            avg_mins = mean(mins),
+            .groups = "drop") %>% 
   left_join(sri_effort, by = c("year", "month")) %>% 
   select(year, month, total_mins, effort_pct) %>% 
-  mutate(mins_eff_adj = total_mins / effort_pct)
+  mutate(mins_eff_adj = total_mins / effort_pct,
+         month_date = ISOdate(year, month, 1))
 
 write_csv(zc_sri, "data/processed_bw/zc_sri.csv")
 
@@ -83,20 +86,17 @@ or_effort <- or_deps %>%
   rowwise() %>% #treats each row as its own group
   reframe( #like summarize but allows for multiple output rows
     deploy_id = deploy_id, 
-    month_start = floor_date(seq.Date(dep_start, dep_end, by = "month"), "month")
+    effort_day = seq.Date(dep_start, dep_end, by = "day")
   ) %>% 
-  left_join(or_deps, by = "deploy_id") %>% 
-  mutate(
-    month_end    = ceiling_date(month_start, "month") - days(1),
-    active_start = pmax(dep_start, month_start),
-    active_end   = pmin(dep_end, month_end),
-    effort_days  = as.numeric(active_end - active_start) + 1
-  ) %>% 
-  mutate(year  = year(month_start),
-         month = month(month_start), 
-         total_days = days_in_month(make_date(year, month, 1)), 
-         effort_pct = effort_days / total_days) %>% 
-  select(deploy_id, year, month, effort_days, total_days, effort_pct)
+  mutate(year_month = floor_date(effort_day, unit = "months")) %>% 
+  group_by(year_month) %>% 
+  summarize(effort_days = n_distinct(effort_day)) %>% 
+  mutate(total_days = days_in_month(year_month), 
+         effort_pct = effort_days / total_days,
+         year = year(year_month),
+         month = month(year_month)) %>% 
+  select(-year_month) %>% 
+  relocate(year, month)
 
 zc_or <- or_raw %>% 
   mutate(date = ymd(month_year), 
@@ -105,6 +105,7 @@ zc_or <- or_raw %>%
   arrange(date) %>% 
   left_join(or_effort, by = c("year", "month")) %>% 
   select(year, month, days_present, effort_pct) %>% 
-  mutate(days_eff_adj = days_present / effort_pct)
+  mutate(days_eff_adj = days_present / effort_pct,
+         month_date = ISOdate(year, month, 1))
 
 write_csv(zc_or, "data/processed_bw/zc_or.csv")
