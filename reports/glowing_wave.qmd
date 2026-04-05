@@ -1,0 +1,403 @@
+---
+title: "glowing_wave"
+format: html
+---
+
+Monterey Bay beaked whale seasonal presence
+
+```{r}
+#| label: setup
+
+library(tidyverse)
+library(lubridate)
+library(cowplot)
+library(mgcv)
+source(here::here("R/bw_funcs.R"))
+
+zc_mb <- read_csv(here::here("data/processed_bw/zc_monterey.csv")) %>% 
+  mutate(date = ymd(Date), 
+         month = Month,
+         year = year(Date)) %>% 
+  arrange(date) %>% 
+  #this is okay because I know we had full effort in 2017-18, but will need to change if adding data from years where we had off effort months
+  complete(year = 2017:2018, month = 1:12, fill = list(count = 0)) %>% 
+  distinct(year, month, count) %>% 
+  mutate(date = ISOdate(year, month, day = 15))
+
+bb_mb <- read_csv(here::here("data/processed_bw/bb_monterey.csv")) %>% 
+  mutate(date = ymd(Date), 
+         month = Month,
+         year = year(Date)) %>% 
+  arrange(date) %>% 
+  #this is okay because I know we had full effort in 2017-18, but will need to change if adding data from years where we had off effort months
+  complete(year = 2017:2018, month = 1:12, fill = list(count = 0)) %>% 
+  distinct(year, month, count) %>% 
+  mutate(date = ISOdate(year, month, day = 15))
+
+```
+
+### Summary stats
+
+```{r}
+zc_summ <- zc_mb %>% 
+  summarize(mean(count), 
+            sd(count), 
+            sum(count))
+
+bb_summ <- bb_mb %>% 
+  summarize(mean(count), 
+            sd(count), 
+            sum(count))
+```
+
+### Plot encounters for each species in Monterey Bay. 
+
+```{r}
+#TO DO: Change the legend title/ put it inside the plot, change the y axis scale of Zc plot
+
+zc_raw_plot <- ggplot(zc_mb, aes(factor(month), count)) +
+  geom_col(aes(fill = factor(year))) +
+  scale_fill_manual(values = c("orange", "tomato")) + 
+  labs(x = "Month", 
+       y = "Zc presence (days)") +
+  scale_x_discrete(limits = factor(1:12), labels = month.abb) +
+  theme_bw()
+
+bb_raw_plot <- ggplot(bb_mb, aes(factor(month), count)) +
+  geom_col(aes(fill = factor(year))) +
+  scale_fill_manual(values = c("violet", "darkmagenta")) + 
+  labs(x = "Month", 
+       y = "Bb presence (days)") +
+  scale_x_discrete(limits = factor(1:12), labels = month.abb) +
+  theme_bw()
+
+```
+
+### Fit GAMs for seasonal presence
+
+Zc:
+
+```{r}
+zc_mb_mod <- gam(count ~ 
+                   s(month, bs = "cc", k = 12) +
+                   s(year, bs = "re"),
+                 family = tw(link = "log"),
+                 data = zc_mb,
+                 method = "fREML")
+
+summary(zc_mb_mod)
+gam.check(zc_mb_mod)
+acf(residuals(zc_mb_mod))
+
+zc_mb_grid <- expand.grid(
+  month = seq(0, 13, by = 0.1),   # extend beyond 1-12
+  year  = 0)
+
+pred <- predict(zc_mb_mod,
+                newdata = zc_mb_grid,
+                exclude = "s(year)",
+                newdata.guaranteed = TRUE,
+                type = "link",
+                se.fit = TRUE)
+
+zc_mb_grid <- zc_mb_grid %>%
+  mutate(
+    fit = exp(pred$fit),
+    lwr = exp(pred$fit - 1.96 * pred$se.fit),
+    upr = exp(pred$fit + 1.96 * pred$se.fit)
+  ) %>% 
+  mutate(across(fit:upr, \(x) x / pracma::trapz(month, fit), .names = "{.col}_norm"))
+
+zc_mb_peaks <-  find_peaks(zc_mb_grid)
+zc_mb_peaks$fit_norm <- zc_mb_peaks$fit / pracma::trapz(zc_mb_grid$month, zc_mb_grid$fit)
+
+# Clip grid back to 1-12 for plotting
+zc_mb_norm_plot <- ggplot(zc_mb_grid %>% filter(month >= 1, month <= 12), 
+       aes(x = month, y = fit_norm)) +
+   geom_ribbon(aes(ymin = lwr_norm, ymax = upr_norm), alpha = 0.2, color = NA) +
+  geom_line(linewidth = 1) +
+  geom_point(data = zc_mb_peaks[2,], aes(x = month, y = fit_norm),
+             size = 3, shape = 21, fill = "white", stroke = 1.5) +
+  scale_x_continuous(breaks = 1:12, labels = month.abb) +
+  theme_bw() +
+  labs(x = NULL, 
+       y = "Zc presence", 
+       title = "Monterey Bay, California | 36° N", 
+       subtitle = "2017-2018")
+
+```
+
+Bb:
+
+```{r}
+bb_mb_mod <- gam(count ~ 
+                   s(month, bs = "cc", k = 12) +
+                   s(year, bs = "re"),
+                 family = tw(link = "log"),
+                 data = bb_mb,
+                 method = "fREML")
+
+summary(bb_mb_mod)
+gam.check(bb_mb_mod)
+acf(residuals(bb_mb_mod))
+
+bb_mb_grid <- expand.grid(
+  month = seq(0, 13, by = 0.1),   # extend beyond 1-12
+  year  = 0)
+
+pred <- predict(bb_mb_mod,
+                newdata = bb_mb_grid,
+                exclude = "s(year)",
+                newdata.guaranteed = TRUE,
+                type = "link",
+                se.fit = TRUE)
+
+bb_mb_grid <- bb_mb_grid %>%
+  mutate(
+    fit = exp(pred$fit),
+    lwr = exp(pred$fit - 1.96 * pred$se.fit),
+    upr = exp(pred$fit + 1.96 * pred$se.fit)
+  ) %>% 
+  mutate(across(fit:upr, \(x) x / pracma::trapz(month, fit), .names = "{.col}_norm"))
+
+bb_mb_peaks <-  find_peaks(bb_mb_grid)
+bb_mb_peaks$fit_norm <- bb_mb_peaks$fit / pracma::trapz(bb_mb_grid$month, bb_mb_grid$fit)
+
+# Clip grid back to 1-12 for plotting
+bb_mb_norm_plot <- ggplot(bb_mb_grid %>% filter(month >= 1, month <= 12), 
+       aes(x = month, y = fit_norm)) +
+   geom_ribbon(aes(ymin = lwr_norm, ymax = upr_norm), alpha = 0.2, color = NA) +
+  geom_line(linewidth = 1) +
+  geom_point(data = bb_mb_peaks, aes(x = month, y = fit_norm),
+             size = 3, shape = 21, fill = "white", stroke = 1.5) +
+  scale_x_continuous(breaks = 1:12, labels = month.abb) +
+  theme_bw() +
+  labs(x = NULL, 
+       y = "Bb presence", 
+       title = "Monterey Bay, California | 36° N", 
+       subtitle = "2017-2018")
+
+```
+
+All plots together:
+
+```{r}
+
+plot_grid(zc_raw_plot, bb_raw_plot, 
+          zc_mb_norm_plot, bb_mb_norm_plot, 
+          nrow = 2, ncol = 2, 
+          align = "h")
+```
+
+### BEUTI in Monterey Bay
+
+```{r}
+
+beuti <- read_csv(here::here("data/indices/BEUTI_06-25.csv")) %>% 
+  set_names(c("date", "latitude", "beuti")) %>% 
+  filter(latitude == 37) %>% 
+  mutate(month = month(date), 
+         year = year(date))
+
+#climatology to get at the long term average
+beuti_clim <- beuti %>% 
+  group_by(month) %>% 
+  summarize(beuti = mean(beuti))
+
+beuti_clim_mod <- gam(beuti ~ 
+                        s(month, bs = "cc", k = 12) +
+                        s(year, bs = "re"),
+                      family = gaussian(),
+                      data = beuti, #DOUBLE CHECK THAT CLIMATOLOGY GOES HERE???
+                      method = "REML")
+
+mb_beuti_grid <- expand.grid(
+  month = seq(0, 13, by = 0.1),   # extend beyond 1-12
+  year  = 0)
+
+pred <- predict(beuti_clim_mod,
+                newdata = mb_beuti_grid,
+                exclude = "s(year)",
+                newdata.guaranteed = TRUE,
+                type = "link",
+                se.fit = TRUE)
+
+mb_beuti_grid$beuti <- pred$fit
+mb_beuti_grid$lower <- pred$fit - pred$se.fit * 1.96
+mb_beuti_grid$upper <- pred$fit + pred$se.fit * 1.96
+
+mb_beuti_grid %>% 
+  filter(between(month, 1, 12)) %>% 
+  ggplot(aes(month, beuti)) + 
+  geom_ribbon(aes(ymin = lower, ymax = upper), alpha = 0.2) +
+  geom_line() + 
+  theme_classic() +
+  scale_x_continuous(breaks = 1:12) + 
+  ylim(-5, 20) + 
+  ggtitle("Monterey Bay")
+```
+
+### Curve simulation
+
+Simulating 10,000 seasonal curves for each species of beaked whale and for BEUTI.
+
+```{r}
+n_sim <- 1e4
+```
+
+Zc:
+
+```{r}
+### Zc ###
+
+Xp_zc <- predict(zc_mb_mod, 
+                 newdata = zc_mb_grid, 
+                 type = "lpmatrix")
+coef_sims_zc <- MASS::mvrnorm(n_sim, 
+                              mu = coef(zc_mb_mod), 
+                              Sigma = vcov(zc_mb_mod))
+sim_curves_zc <- Xp_zc %*% t(coef_sims_zc)
+sim_curves_response_zc <- zc_mb_mod$family$linkinv(sim_curves_zc)
+boot_zc <- expand_grid(i = 1:nrow(zc_mb_grid), 
+            j = 1:ncol(sim_curves_response_zc)) %>% 
+  mutate(month = zc_mb_grid$month[i], 
+         sim = j, 
+         count = sim_curves_response_zc[cbind(i, j)]) %>% 
+  select(-c(i, j)) 
+
+### Bb ###
+
+Xp_bb <- predict(bb_mb_mod, 
+                 newdata = bb_mb_grid, 
+                 type = "lpmatrix")
+coef_sims_bb <- MASS::mvrnorm(n_sim, 
+                              mu = coef(bb_mb_mod), 
+                              Sigma = vcov(bb_mb_mod))
+sim_curves_bb <- Xp_bb %*% t(coef_sims_bb)
+sim_curves_response_bb <- bb_mb_mod$family$linkinv(sim_curves_bb)
+boot_bb <- expand_grid(i = 1:nrow(bb_mb_grid), 
+            j = 1:ncol(sim_curves_response_bb)) %>% 
+  mutate(month = bb_mb_grid$month[i], 
+         sim = j, 
+         count = sim_curves_response_bb[cbind(i, j)]) %>% 
+  select(-c(i, j)) 
+
+### BEUTI ###
+Xp_beuti <- predict(beuti_clim_mod, newdata = mb_beuti_grid, type = "lpmatrix")
+coef_sims_beuti <- MASS::mvrnorm(n_sim, mu = coef(beuti_clim_mod), Sigma = vcov(beuti_clim_mod))
+sim_curves_beuti <- Xp_beuti %*% t(coef_sims_beuti)
+
+```
+
+### Calculating lags for each species. 
+
+Zc:
+
+```{r}
+boot_beuti <- expand_grid(i = 1:nrow(mb_beuti_grid), 
+            j = 1:ncol(sim_curves_beuti)) %>% 
+  mutate(month = mb_beuti_grid$month[i], 
+         sim = j, 
+         beuti = sim_curves_beuti[cbind(i, j)]) %>% 
+  select(-c(i, j)) 
+
+boot_beuti_peak <- boot_beuti %>% 
+  group_by(sim) %>% 
+  summarize(peak_month_beuti = month[which.max(beuti)])
+
+boot_zc_peak <- boot_zc %>% 
+  group_by(sim) %>% 
+  summarize(peak_month_zc = month[which.max(count)])
+
+boot_peak_lag_zc <- left_join(boot_beuti_peak, boot_zc_peak, by = "sim") %>% 
+  mutate(peak_lag = peak_month_zc - peak_month_beuti, 
+         peak_lag = ifelse(peak_lag <= 0, peak_lag + 12, peak_lag)) 
+
+mean_peak_lag_zc <- CircStats::circ.mean(boot_peak_lag_zc$peak_lag * 2 * pi / 12) * 12 / 2 / pi
+ci_peak_lag_zc <- shortest_arc_ci(boot_peak_lag_zc$peak_lag)
+
+if (mean_peak_lag_zc < 0) mean_peak_lag_zc <- mean_peak_lag_zc + 12
+
+ggplot(boot_peak_lag_zc, aes(peak_lag)) + 
+  geom_histogram() + 
+  geom_vline(xintercept = mean_peak_lag_zc, color = "red") + 
+  ggtitle("Zc") + 
+  theme_classic()
+```
+
+Bb:
+
+```{r}
+boot_bb_peak <- boot_bb %>% 
+  group_by(sim) %>% 
+  summarize(peak_month_bb = month[which.max(count)])
+
+boot_peak_lag_bb <- left_join(boot_beuti_peak, boot_bb_peak, by = "sim") %>% 
+  mutate(peak_lag = peak_month_bb - peak_month_beuti, 
+         peak_lag = ifelse(peak_lag <= 0, peak_lag + 12, peak_lag)) 
+
+mean_peak_lag_bb <- CircStats::circ.mean(boot_peak_lag_bb$peak_lag * 2 * pi / 12) * 12 / 2 / pi
+ci_peak_lag_bb <- shortest_arc_ci(boot_peak_lag_bb$peak_lag)
+
+if (mean_peak_lag_bb < 0) mean_peak_lag_bb <- mean_peak_lag_bb + 12
+
+ggplot(boot_peak_lag_bb, aes(peak_lag)) + 
+  geom_histogram() + 
+  geom_vline(xintercept = mean_peak_lag_bb, color = "red") + 
+  ggtitle("Bb") + 
+  theme_classic()
+```
+
+### Circular plot
+
+```{r}
+# normalize each variable to 0-1
+zc_plot <- zc_mb %>% 
+  group_by(month) %>%
+  summarize(count = mean(count)) %>% 
+  mutate(value = (count - min(count)) / (max(count) - min(count)))
+
+bb_plot <- bb_mb %>% 
+  group_by(month) %>%
+  summarize(count = mean(count))
+bb_plot$value <- (bb_plot$count - min(bb_plot$count)) / (max(bb_plot$count) - min(bb_plot$count))
+
+beuti_plot <- beuti_clim %>% 
+  mutate(value = (beuti - min(beuti)) / (max(beuti) - min(beuti)))
+
+brooding <- data.frame(
+  month = 1:12,
+  brooding = c(1, 1, 1, 1, 1, 1, 0, 0, 0, 1, 1, 1)  # Jan-Jun, Oct-Dec
+)
+
+ggplot() +
+  geom_rect(data = brooding %>% filter(brooding == 1),
+          aes(xmin = month - .5, xmax = month + .5,
+              ymin = 0, ymax = 1),
+          fill = "darkred", alpha = 0.2,
+          inherit.aes = FALSE) +
+  geom_col(data = zc_plot,
+           aes(x = month - 0.2, y = value),
+           fill = "darkorange",
+           alpha = 0.8, 
+           width = 0.75) +
+    geom_col(data = bb_plot,
+           aes(x = month + 0.2, y = value),
+           fill = "violet",
+           width = 0.75,
+           alpha = 0.8) +
+  scale_x_continuous(breaks = 1:12, 
+                      labels = month.abb) +
+  geom_line(data = beuti_plot, 
+            aes(x = month, y = value), 
+            color = "steelblue", 
+            size = 1) +
+  coord_polar() +
+  ylim(0, 1) +
+  theme_minimal() +
+  theme(axis.title = element_blank(),
+        axis.text.y = element_blank(),
+        panel.grid.minor = element_blank()) +
+  ggtitle("Monterey Bay Seasonal Patterns") + 
+  labs(color = NULL)
+```
