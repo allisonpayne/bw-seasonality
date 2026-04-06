@@ -50,7 +50,7 @@ zc_mb %>%
   relocate(species)
 ```
 
-### Plot encounters for each species in Monterey Bay. 
+### Plot encounters for each species in Monterey Bay.
 
 ```{r}
 #TO DO: Change the legend title/ put it inside the plot, change the y axis scale of Zc plot
@@ -181,9 +181,7 @@ bb_mb_norm_plot <- ggplot(bb_mb_grid %>% filter(month >= 1, month <= 12),
   scale_x_continuous(breaks = 1:12, labels = month.abb) +
   theme_bw() +
   labs(x = NULL, 
-       y = "Bb presence", 
-       title = "Monterey Bay, California | 36° N", 
-       subtitle = "2017-2018")
+       y = "Bb")
 
 ```
 
@@ -191,8 +189,8 @@ All plots together:
 
 ```{r}
 
-plot_grid(zc_raw_plot, bb_raw_plot, 
-          zc_mb_norm_plot, bb_mb_norm_plot, 
+plot_grid(zc_raw_plot, zc_mb_norm_plot, 
+          bb_raw_plot, bb_mb_norm_plot, 
           nrow = 2, ncol = 2, 
           align = "h")
 ```
@@ -293,7 +291,7 @@ sim_curves_beuti <- Xp_beuti %*% t(coef_sims_beuti)
 
 ```
 
-### Calculating lags for each species. 
+### Calculating lags for each species.
 
 Zc:
 
@@ -365,6 +363,10 @@ bb_plot <- bb_mb %>%
   group_by(month) %>%
   summarize(count = mean(count))
 bb_plot$value <- (bb_plot$count - min(bb_plot$count)) / (max(bb_plot$count) - min(bb_plot$count))
+
+beuti_clim <- beuti %>% 
+  group_by(latitude, month) %>% 
+  summarize(beuti = mean(beuti))
 
 beuti_plot <- beuti_clim %>% 
   mutate(value = (beuti - min(beuti)) / (max(beuti) - min(beuti)))
@@ -703,4 +705,114 @@ plot_grid(or_norm_plot, zc_mb_norm_plot, sri_norm_plot, scb_norm_plot,
 
 plot_grid(or_circ, mb_circ, sri_circ, scb_circ, 
           nrow = 4)
+```
+
+### Map
+
+```{r}
+library(marmap)      # ETOPO1 bathymetry
+library(metR)        # geom_contour_fill 
+library(terra)
+library(tidyterra)
+library(rnaturalearth)
+library(rnaturalearthdata)
+
+bathy <- getNOAA.bathy(
+  lon1 = -145, lon2 = -115, 
+  lat1 = 30, lat2 = 60,
+  keep = TRUE, 
+  path = "data/bathy/"
+)
+bathy_df <- fortify(bathy)
+isobaths <- c(-200, -500, -1000, -2000, -4000) 
+
+land <- ne_countries(scale = "medium", returnclass = "sf")
+states <- ne_states(country = "united states of america", returnclass = "sf") 
+
+#oregon site will need to be updated, only including one point for socal for now 
+sites <- data.frame(
+  name = c("San Diego", "Los Angeles", 
+           "Monterey", "Oregon", 
+           "Washington", "Gulf of Alaska"), 
+  lon = c(-119.176167, -120.259167, 
+          -122.186833, -125.587333, 
+          -125.333333, -142.616667), 
+  lat = c(32.846000, 33.540750,
+          36.712500, 44.656000, 
+          47.500000, 56.216667)
+)
+
+bw_graticule <- graticule(
+  lon = seq(-145, -115, by = 5),
+  lat = seq(30, 60, by = 5),
+  crs = "EPSG:4326"
+)
+  
+bw_map <- ggplot() + 
+  #bathymetry
+  geom_raster(data = filter(bathy_df, z <= 0), 
+              aes(x, y, fill = z), 
+              interpolate = TRUE) + 
+  geom_sf(data = bw_graticule,
+          color = "grey90",
+          alpha = 0.2,
+          linewidth = 0.5) +
+  scale_fill_gradientn(
+    colours  = c("#08306b", "#2171b5", "#6baed6", "#c6dbef"),
+    values   = scales::rescale(c(-6000, -2000, -200, 0)),
+    name     = "Depth (m)",
+    na.value = "grey80"
+  ) +
+  # Land + state borders
+  geom_sf(data = land,
+          fill = "grey75",
+          colour = NA) +
+  geom_sf(data = states, 
+          fill = NA, 
+          colour = "grey60", 
+          linewidth = 0.2) +  
+  coord_sf(
+    xlim   = c(-145, -115),
+    ylim   = c(31, 60),
+    expand = FALSE
+  ) + 
+  scale_x_continuous(breaks = seq(-145, -115, by = 5)) +
+  # Isobath contours
+  geom_contour(
+    data    = bathy_df,
+    aes(x, y, z = z),
+    breaks  = isobaths,
+    colour  = "lightblue", linewidth = 0.25, alpha = 0.6
+  ) + 
+  geom_point(data = sites, 
+             aes(lon, lat), 
+             color = "white", 
+             size = 2, 
+             inherit.aes = FALSE) +
+  geom_hline(yintercept = c(32.8, 33.5, 
+                            36.67, 44.67, 
+                            47.5, 56.25), 
+             color = "white", 
+             linetype = "dashed") + 
+  annotate("text", x = -137, y = c(33.1, 33.75, 
+                                     37, 45, 
+                                     47.8, 56.5),
+         label = c("32.8°N", "33.5°N",
+                   "36.6°N", "44.7°N", 
+                   "47.5°N", "56°N"),
+         colour = "white", size = 2.5, hjust = 1) + 
+  geom_text(data = sites,
+            aes(x = lon, y = lat, label = name),
+            fontface = "bold",
+            color = "white",
+            nudge_y = 0.4, 
+            nudge_x = 0.5, 
+            size = 2.5) +
+  labs(x = "Latitude", y = "Longitude") + 
+  theme_minimal(14) + 
+  theme(legend.position = c(0.98, 0.98),
+        legend.justification = c(1, 1), 
+        legend.background = element_rect(fill = "white"))
+
+bw_map
 ```
