@@ -20,7 +20,7 @@ zc_mb <- read_csv(here::here("data/processed_bw/zc_monterey.csv")) %>%
          year = year(Date)) %>% 
   arrange(date) %>% 
   #this is okay because I know we had full effort in 2017-18, but will need to change if adding data from years where we had off effort months
-  complete(year = 2017:2018, month = 1:12, fill = list(count = 0)) %>% 
+  complete(year = 2016:2018, month = 1:12, fill = list(count = 0)) %>% 
   distinct(year, month, count) %>% 
   mutate(date = ISOdate(year, month, day = 1))
 
@@ -30,7 +30,7 @@ bb_mb <- read_csv(here::here("data/processed_bw/bb_monterey.csv")) %>%
          year = year(Date)) %>% 
   arrange(date) %>% 
   #this is okay because I know we had full effort in 2017-18, but will need to change if adding data from years where we had off effort months
-  complete(year = 2017:2018, month = 1:12, fill = list(count = 0)) %>% 
+  complete(year = 2016:2018, month = 1:12, fill = list(count = 0)) %>% 
   distinct(year, month, count) %>% 
   mutate(date = ISOdate(year, month, day = 1))
 
@@ -55,12 +55,12 @@ zc_mb %>%
 ```{r}
 #TO DO: Change the legend title/ put it inside the plot, change the y axis scale of Zc plot
 
-zc_raw_plot <- ggplot(zc_mb, aes(factor(month), count)) +
-  geom_col(aes(fill = factor(year))) +
-  scale_fill_manual(values = c("orange", "tomato")) + 
+zc_raw_plot <- ggplot(zc_mb, aes(month, count)) +
+  geom_area(aes(fill = factor(year))) +
+  scale_fill_manual(values = c("orange", "tomato", "firebrick")) + 
   labs(x = "Month", 
        y = "Zc (days)") +
-  scale_x_discrete(limits = factor(1:12), labels = month.abb) +
+  scale_x_continuous(breaks = 1:12, minor_breaks = NULL) +
   theme_bw() +
   theme(legend.position = "inside",
         legend.position.inside = c(0.01, 0.99),
@@ -68,12 +68,12 @@ zc_raw_plot <- ggplot(zc_mb, aes(factor(month), count)) +
         legend.title = element_blank(),
         legend.background = element_rect(fill = NA))
 
-bb_raw_plot <- ggplot(bb_mb, aes(factor(month), count)) +
-  geom_col(aes(fill = factor(year))) +
-  scale_fill_manual(values = c("violet", "darkmagenta")) + 
+bb_raw_plot <- ggplot(bb_mb, aes(month, count)) +
+  geom_area(aes(fill = factor(year))) +
+  scale_fill_manual(values = c("violet", "darkmagenta", "purple")) + 
   labs(x = "Month", 
        y = "Bb (days)") +
-  scale_x_discrete(limits = factor(1:12), labels = month.abb) +
+  scale_x_continuous(breaks = 1:12, minor_breaks = NULL) +
   theme_bw() +
   theme(legend.position = "inside",
         legend.position.inside = c(0.01, 0.99),
@@ -91,6 +91,7 @@ Zc:
 zc_mb_mod <- gam(count ~ 
                    s(month, bs = "cc", k = 12) +
                    s(year, bs = "re"),
+                 #should i use negative binominal instead?
                  family = tw(link = "log"),
                  data = zc_mb,
                  method = "fREML")
@@ -118,7 +119,7 @@ zc_mb_grid <- zc_mb_grid %>%
   ) %>% 
   mutate(across(fit:upr, \(x) x / pracma::trapz(month, fit), .names = "{.col}_norm"))
 
-zc_mb_peaks <-  find_peaks(zc_mb_grid)
+zc_mb_peaks <- find_peaks(zc_mb_grid)
 zc_mb_peaks$fit_norm <- zc_mb_peaks$fit / pracma::trapz(zc_mb_grid$month, zc_mb_grid$fit)
 
 # Clip grid back to 1-12 for plotting
@@ -126,9 +127,10 @@ zc_mb_norm_plot <- ggplot(zc_mb_grid %>% filter(month >= 1, month <= 12),
        aes(x = month, y = fit_norm)) +
    geom_ribbon(aes(ymin = lwr_norm, ymax = upr_norm), alpha = 0.2, color = NA) +
   geom_line(linewidth = 1) +
-  geom_point(data = zc_mb_peaks[2,], aes(x = month, y = fit_norm),
+  geom_point(data = first(zc_mb_peaks), aes(x = month, y = fit_norm),
              size = 3, shape = 21, fill = "white", stroke = 1.5) +
   scale_x_continuous(breaks = 1:12, labels = month.abb) +
+  ylim(0, .2) + 
   theme_bw() +
   labs(x = NULL, 
        y = "Zc")
@@ -245,6 +247,7 @@ Simulating 10,000 seasonal curves for each species of beaked whale and for BEUTI
 
 ```{r}
 n_sim <- 1e4
+set.seed(123)
 ```
 
 Zc:
@@ -416,18 +419,17 @@ ggplot() +
 
 scb_zc <- read.csv(here::here("data/processed_bw/zc_scb.csv")) 
 scb_zc$site <- factor(scb_zc$site)
+scb_zc <- filter(scb_zc, site == "H")
 
 scb_zc_raw_plot <- ggplot(scb_zc, aes(factor(month), Zc_pres_eff_adj)) +
   geom_boxplot() +
   labs(x = "Month", 
        y = "Zc presence (mins)") +
   scale_x_discrete(limits = factor(1:12), labels = month.abb) +
-  facet_wrap(~site) +
   theme_bw()
 
 scb_bw_mod <- gam(Zc_pres_eff_adj ~ 
-                    s(month, by = site, bs = "cc", k = 12) +
-                    site +
+                    s(month, bs = "cc", k = 12) +
                     s(year, bs = "re"),
                   family = tw(link = "log"),
                   data = scb_zc,
@@ -465,16 +467,15 @@ scb_peaks$fit_norm <- scb_peaks$fit / pracma::trapz(scb_bw_grid$month, scb_bw_gr
 
 # Clip grid back to 1-12 for plotting
 scb_norm_plot <- ggplot(scb_bw_grid %>% filter(month >= 1, month <= 12), 
-       aes(x = month, y = fit_norm, color = site)) +
-  geom_ribbon(aes(ymin = lwr_norm, ymax = upr_norm, fill = site), alpha = 0.2, color = NA) +
+       aes(x = month, y = fit_norm)) +
+  geom_ribbon(aes(ymin = lwr_norm, ymax = upr_norm), alpha = 0.2, color = NA) +
   geom_line(linewidth = 1) +
-  geom_point(data = scb_peaks, aes(x = month, y = fit_norm, color = site),
+  geom_point(data = scb_peaks, aes(x = month, y = fit_norm),
              size = 3, shape = 21, fill = "white", stroke = 1.5) +
   scale_x_continuous(breaks = 1:12, labels = month.abb) +
-  facet_wrap(~ site, ncol = 1, scales = "free_y") +
   theme_bw() +
   theme(legend.position = "none") +
-  labs(x = NULL, y = "Zc", color = "Site", fill = "Site") 
+  labs(x = NULL, y = "Zc") 
 ```
 
 ### SRI GAM
@@ -580,6 +581,123 @@ or_norm_plot <- ggplot(or_grid %>% filter(month >= 1, month <= 12),
    geom_ribbon(aes(ymin = lwr_norm, ymax = upr_norm), alpha = 0.2, color = NA) +
   geom_line(linewidth = 1) +
   geom_point(data = first(or_peaks), aes(x = month, y = fit_norm),
+             size = 3, shape = 21, fill = "white", stroke = 1.5) +
+  scale_x_continuous(breaks = 1:12, labels = month.abb) +
+  theme_bw() +
+  labs(x = NULL, 
+       y = "Zc")
+```
+
+### WA GAM
+
+```{r}
+wa_zc <- read.csv(here::here("data/other_sites/WA/WA_zc_digitized.csv"), 
+                  col.names = c("month", "weekly_mins")) %>% 
+  mutate(month = floor(month) + 1, 
+         weekly_mins = pmax(weekly_mins, 0)) %>% 
+  group_by(month) %>% 
+  summarize(zc_mins = sum(weekly_mins))
+  
+
+wa_zc_raw_plot <- ggplot(wa_zc, aes(month, zc_mins)) + 
+  geom_col() + 
+  geom_smooth() + 
+    labs(x = "Month", 
+       y = "Zc presence (avg mins)") +
+  theme_minimal()
+
+wa_mod <- gam(zc_mins ~ 
+                s(month, bs = "cc", k = 12), #adjusted from 12 - make sure is ok
+              family = tw(link = "log"),
+              data = wa_zc,
+              method = "fREML")
+
+
+wa_grid <- expand.grid(
+  month = seq(0, 13, by = 0.1),   # extend beyond 1-12
+  year  = 0)
+
+pred <- predict(wa_mod,
+                newdata = wa_grid,
+                newdata.guaranteed = TRUE,
+                type = "link",
+                se.fit = TRUE)
+
+wa_grid <- wa_grid %>%
+  mutate(
+    fit = exp(pred$fit),
+    lwr = exp(pred$fit - 1.96 * pred$se.fit),
+    upr = exp(pred$fit + 1.96 * pred$se.fit)
+  ) %>% 
+  mutate(across(fit:upr, \(x) x / pracma::trapz(month, fit), .names = "{.col}_norm"))
+
+wa_peaks <-  find_peaks(wa_grid)
+wa_peaks$fit_norm <- wa_peaks$fit / pracma::trapz(wa_grid$month, wa_grid$fit)
+
+# Clip grid back to 1-12 for plotting
+wa_norm_plot <- ggplot(wa_grid %>% filter(month >= 1, month <= 12), 
+       aes(x = month, y = fit_norm)) +
+   geom_ribbon(aes(ymin = lwr_norm, ymax = upr_norm), alpha = 0.2, color = NA) +
+  geom_line(linewidth = 1) +
+  geom_point(data = first(wa_peaks), aes(x = month, y = fit_norm),
+             size = 3, shape = 21, fill = "white", stroke = 1.5) +
+  scale_x_continuous(breaks = 1:12, labels = month.abb) +
+  theme_bw() +
+  labs(x = NULL, 
+       y = "Zc")
+
+```
+
+### GoA plots
+
+```{r}
+goa_zc <- read.csv(here::here("data/other_sites/GoA/Zc_Pratt_GoA.csv"), 
+                   col.names = c("month", "weekly_mins")) %>% 
+  mutate(month = floor(month) + 1, 
+         weekly_mins = pmax(weekly_mins, 0)) %>% 
+  group_by(month) %>% 
+  summarize(zc_mins = sum(weekly_mins))
+
+goa_zc_raw_plot <- ggplot(goa_zc, aes(month, zc_mins)) + 
+  geom_col() + 
+  geom_smooth() + 
+    labs(x = "Month", 
+       y = "Zc presence (avg mins)") +
+  theme_minimal()
+
+goa_mod <- gam(zc_mins ~ 
+                s(month, bs = "cc", k = 12), #adjusted from 12 - make sure is ok
+              family = tw(link = "log"),
+              data = goa_zc,
+              method = "fREML")
+
+goa_grid <- expand.grid(
+  month = seq(0, 13, by = 0.1),   # extend beyond 1-12
+  year  = 0)
+
+pred <- predict(goa_mod,
+                newdata = goa_grid,
+                newdata.guaranteed = TRUE,
+                type = "link",
+                se.fit = TRUE)
+
+goa_grid <- goa_grid %>%
+  mutate(
+    fit = exp(pred$fit),
+    lwr = exp(pred$fit - 1.96 * pred$se.fit),
+    upr = exp(pred$fit + 1.96 * pred$se.fit)
+  ) %>% 
+  mutate(across(fit:upr, \(x) x / pracma::trapz(month, fit), .names = "{.col}_norm"))
+
+goa_peaks <-  find_peaks(goa_grid)
+goa_peaks$fit_norm <- goa_peaks$fit / pracma::trapz(goa_grid$month, goa_grid$fit)
+
+# Clip grid back to 1-12 for plotting
+goa_norm_plot <- ggplot(goa_grid %>% filter(month >= 1, month <= 12), 
+       aes(x = month, y = fit_norm)) +
+   geom_ribbon(aes(ymin = lwr_norm, ymax = upr_norm), alpha = 0.2, color = NA) +
+  geom_line(linewidth = 1) +
+  geom_point(data = last(goa_peaks), aes(x = month, y = fit_norm),
              size = 3, shape = 21, fill = "white", stroke = 1.5) +
   scale_x_continuous(breaks = 1:12, labels = month.abb) +
   theme_bw() +
@@ -695,16 +813,72 @@ mb_circ <- ggplot() +
         axis.text.y = element_blank(),
         panel.grid.minor = element_blank()) +
   labs(color = NULL)
+
+zc_plot_wa <- wa_zc %>% 
+  group_by(month) %>%
+  summarize(zc_mins = mean(zc_mins)) %>% 
+  mutate(value = (zc_mins - min(zc_mins)) / (max(zc_mins) - min(zc_mins)))
+
+wa_circ <- ggplot() +
+  geom_rect(data = breeding %>% filter(breeding == 1),
+            aes(xmin = month - .5, xmax = month + .5,
+                ymin = 0, ymax = 1),
+            fill = "lightblue", alpha = 0.5,
+            inherit.aes = FALSE) +
+  geom_col(data = zc_plot_wa,
+           aes(x = month, y = value),
+           fill = "darkorange",
+           alpha = 0.8,
+           width = 0.9) +
+  scale_x_continuous(breaks = 1:12, 
+                     labels = month.abb) +
+  coord_polar(start = -pi/12) +
+  ylim(0, 1) +
+  theme_minimal() +
+  theme(axis.title = element_blank(),
+        axis.text.y = element_blank(),
+        panel.grid.minor = element_blank()) +
+  labs(color = NULL)
+
+zc_plot_goa <- goa_zc %>% 
+  group_by(month) %>%
+  summarize(zc_mins = mean(zc_mins)) %>% 
+  mutate(value = (zc_mins - min(zc_mins)) / (max(zc_mins) - min(zc_mins)))
+
+goa_circ <- ggplot() +
+  geom_rect(data = breeding %>% filter(breeding == 1),
+            aes(xmin = month - .5, xmax = month + .5,
+                ymin = 0, ymax = 1),
+            fill = "lightblue", alpha = 0.5,
+            inherit.aes = FALSE) +
+  geom_col(data = zc_plot_goa,
+           aes(x = month, y = value),
+           fill = "darkorange",
+           alpha = 0.8,
+           width = 0.9) +
+  scale_x_continuous(breaks = 1:12, 
+                     labels = month.abb) +
+  coord_polar(start = -pi/12) +
+  ylim(0, 1) +
+  theme_minimal() +
+  theme(axis.title = element_blank(),
+        axis.text.y = element_blank(),
+        panel.grid.minor = element_blank()) +
+  labs(color = NULL)
+
 ```
 
 Plotted together:
 
 ```{r}
-plot_grid(or_norm_plot, zc_mb_norm_plot, sri_norm_plot, scb_norm_plot, 
-          nrow = 4, rel_heights = c(1, 1, 1, 2))
+plot_grid(goa_norm_plot, wa_norm_plot, 
+          or_norm_plot, zc_mb_norm_plot, 
+          sri_norm_plot, scb_norm_plot, 
+          nrow = 6)
 
-plot_grid(or_circ, mb_circ, sri_circ, scb_circ, 
-          nrow = 4)
+plot_grid(goa_circ, wa_circ, or_circ, 
+          mb_circ, sri_circ, scb_circ, 
+          nrow = 2)
 ```
 
 ### Map
@@ -810,7 +984,8 @@ bw_map <- ggplot() +
             size = 2.5) +
   labs(x = "Latitude", y = "Longitude") + 
   theme_minimal(14) + 
-  theme(legend.position = c(0.98, 0.98),
+  theme(legend.position = "inside",
+        legend.position.inside = c(0.98, 0.98),
         legend.justification = c(1, 1), 
         legend.background = element_rect(fill = "white"))
 
