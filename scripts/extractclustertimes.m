@@ -1,9 +1,9 @@
 %change first number after Tfinal to the cluster you want
-Q = table(datestr(Tfinal{28, 7}), 'VariableNames', {'Date'}); 
+Q = table(datestr(Tfinal{3, 7}), 'VariableNames', {'Date'}); 
 
 %% 
 
-writetable(Q, 'unid_2016_c28.csv') 
+writetable(Q, 'unid_2015_c3.csv') 
 
 % %%
 % 

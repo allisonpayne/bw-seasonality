@@ -27,6 +27,12 @@ write_csv(zc, "data/processed_bw/zc_monterey.csv")
 
 ### Bb ###
 
+bb2015 <- bw_sightings(c(
+  "data/raw_bw/bb/bb_2015_c21.csv",
+  "data/raw_bw/bb/bb_2015_c22.csv", 
+  "data/raw_bw/bb/bb_2015_c24.csv"
+))
+
 bb2016 <- bw_sightings(c(
   "data/raw_bw/bb/bb_2016_c14.csv",
   "data/raw_bw/bb/bb_2016_c16.csv", 
@@ -47,5 +53,6 @@ bb2018 <- bw_sightings(c(
   "data/raw_bw/bb/bb_2018_c40.csv"))
 
 bb <- full_join(bb2016, bb2017) %>% 
-  full_join(bb2018)
+  full_join(bb2018) %>% 
+  full_join(bb2015)
 write_csv(bb, "data/processed_bw/bb_monterey.csv")
