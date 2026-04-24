@@ -14,25 +14,40 @@ library(cowplot)
 library(mgcv)
 source(here::here("R/bw_funcs.R"))
 
-zc_mb <- read_csv(here::here("data/processed_bw/zc_monterey.csv")) %>% 
-  mutate(date = ymd(Date), 
+zc_mb <- read_csv(here::here("data/processed_bw/zc_monterey.csv")) 
+
+zc_mb_monthly <- zc_mb %>% 
+  mutate(date = ymd(Date),
          month = Month,
-         year = year(Date)) %>% 
-  arrange(date) %>% 
-  #this is okay because I know we had full effort in 2017-18, but will need to change if adding data from years where we had off effort months
-  complete(year = 2016:2018, month = 1:12, fill = list(count = 0)) %>% 
-  distinct(year, month, count) %>% 
+         year = year(Date)) %>%
+  arrange(date) %>%
+  #this is okay because I know we had full effort in 2016-18, but will need to change if adding data from years where we had off effort months
+  complete(year = 2016:2018, month = 1:12, fill = list(count = 0)) %>%
+  distinct(year, month, count) %>%
   mutate(date = ISOdate(year, month, day = 1))
 
-bb_mb <- read_csv(here::here("data/processed_bw/bb_monterey.csv")) %>% 
-  mutate(date = ymd(Date), 
-         month = Month,
-         year = year(Date)) %>% 
-  arrange(date) %>% 
-  #this is okay because I know we had full effort in 2017-18, but will need to change if adding data from years where we had off effort months
-  complete(year = 2016:2018, month = 1:12, fill = list(count = 0)) %>% 
-  distinct(year, month, count) %>% 
-  mutate(date = ISOdate(year, month, day = 1))
+#daily effort at MARS
+load(here::here("data/MARS_DailyPercentRecorded.RData")) 
+P <- P %>% 
+  rename(Date = daystart) %>% 
+  filter(year(Date) < 2019)
+
+#daily presence, filtered to days when effort was > 85% (not sure this is the right way to do this)
+zc_mb_daily <- P %>% 
+  left_join(
+    zc_mb %>% 
+      distinct(Date) %>% 
+      mutate(present = TRUE), 
+    by = "Date"
+  ) %>% 
+  mutate(present = replace_na(present, FALSE),
+         month = month(Date), 
+         year = factor(year(Date))) %>% 
+  filter(PercentRecorded >= 85)
+
+ggplot(zc_mb_daily, aes(Date, present)) + 
+  geom_point()
+
 
 ```
 
@@ -40,39 +55,18 @@ bb_mb <- read_csv(here::here("data/processed_bw/bb_monterey.csv")) %>%
 
 ```{r}
 zc_mb %>% 
-  summarize(across(count, list(mean = mean, sd = sd, total = sum))) %>% 
-  mutate(species = "zc") %>% 
-  rbind(
-    bb_mb %>% 
-      summarize(across(count, list(mean = mean, sd = sd, total = sum))) %>% 
-      mutate(species = "bb")
-  ) %>% 
-  relocate(species)
+  summarize(across(count, list(mean = mean, sd = sd, total = length))) 
 ```
 
 ### Plot encounters for each species in Monterey Bay.
 
 ```{r}
-#TO DO: Change the legend title/ put it inside the plot, change the y axis scale of Zc plot
 
-zc_raw_plot <- ggplot(zc_mb, aes(month, count)) +
+zc_raw_plot <- ggplot(zc_mb_monthly, aes(month, count)) +
   geom_area(aes(fill = factor(year))) +
   scale_fill_manual(values = c("orange", "tomato", "firebrick")) + 
   labs(x = "Month", 
        y = "Zc (days)") +
-  scale_x_continuous(breaks = 1:12, minor_breaks = NULL) +
-  theme_bw() +
-  theme(legend.position = "inside",
-        legend.position.inside = c(0.01, 0.99),
-        legend.justification = c(0, 1),
-        legend.title = element_blank(),
-        legend.background = element_rect(fill = NA))
-
-bb_raw_plot <- ggplot(bb_mb, aes(month, count)) +
-  geom_area(aes(fill = factor(year))) +
-  scale_fill_manual(values = c("lavender", "violet", "darkmagenta", "purple")) + 
-  labs(x = "Month", 
-       y = "Bb (days)") +
   scale_x_continuous(breaks = 1:12, minor_breaks = NULL) +
   theme_bw() +
   theme(legend.position = "inside",
@@ -88,23 +82,22 @@ bb_raw_plot <- ggplot(bb_mb, aes(month, count)) +
 Zc:
 
 ```{r}
-zc_mb_mod <- gam(count ~ 
-                   s(month, bs = "cc", k = 12) +
-                   s(year, bs = "re"),
-                 #should i use negative binominal instead?
-                 family = tw(link = "log"),
-                 data = zc_mb,
-                 method = "fREML")
+zc_mb_daily_mod <- gam(present ~ 
+                         s(month, bs = "cc", k = 12) +
+                         s(year, bs = "re"),
+                       family = binomial(link = "logit"),
+                       data = zc_mb_daily,
+                       method = "REML")
 
-summary(zc_mb_mod)
-gam.check(zc_mb_mod)
-acf(residuals(zc_mb_mod))
+summary(zc_mb_daily_mod)
+gam.check(zc_mb_daily_mod)
+acf(residuals(zc_mb_daily_mod))
 
 zc_mb_grid <- expand.grid(
   month = seq(0, 13, by = 0.1),   # extend beyond 1-12
   year  = 0)
 
-pred <- predict(zc_mb_mod,
+pred <- predict(zc_mb_daily_mod,
                 newdata = zc_mb_grid,
                 exclude = "s(year)",
                 newdata.guaranteed = TRUE,
@@ -113,9 +106,9 @@ pred <- predict(zc_mb_mod,
 
 zc_mb_grid <- zc_mb_grid %>%
   mutate(
-    fit = exp(pred$fit),
-    lwr = exp(pred$fit - 1.96 * pred$se.fit),
-    upr = exp(pred$fit + 1.96 * pred$se.fit)
+    fit = plogis(pred$fit),
+    lwr = plogis(pred$fit - 1.96 * pred$se.fit),
+    upr = plogis(pred$fit + 1.96 * pred$se.fit)
   ) %>% 
   mutate(across(fit:upr, \(x) x / pracma::trapz(month, fit), .names = "{.col}_norm"))
 
@@ -124,77 +117,40 @@ zc_mb_peaks$fit_norm <- zc_mb_peaks$fit / pracma::trapz(zc_mb_grid$month, zc_mb_
 
 # Clip grid back to 1-12 for plotting
 zc_mb_norm_plot <- ggplot(zc_mb_grid %>% filter(month >= 1, month <= 12), 
-       aes(x = month, y = fit_norm)) +
-   geom_ribbon(aes(ymin = lwr_norm, ymax = upr_norm), alpha = 0.2, color = NA) +
+                          aes(x = month, y = fit_norm)) +
+  geom_ribbon(aes(ymin = lwr_norm, ymax = upr_norm), alpha = 0.2, color = NA) +
   geom_line(linewidth = 1) +
-  geom_point(data = first(zc_mb_peaks), aes(x = month, y = fit_norm),
+  geom_point(data = zc_mb_peaks[2:3,], aes(x = month, y = fit_norm),
              size = 3, shape = 21, fill = "white", stroke = 1.5) +
   scale_x_continuous(breaks = 1:12, labels = month.abb) +
-  ylim(0, .2) + 
+  # ylim(0, .2) + 
+  theme_bw() +
+  labs(x = NULL, 
+       y = NULL)
+
+zc_mb_plot <- ggplot(zc_mb_grid %>% filter(month >= 1, month <= 12), 
+                          aes(x = month, y = fit)) +
+  geom_ribbon(aes(ymin = lwr, ymax = upr), alpha = 0.2, color = NA) +
+  geom_line(linewidth = 1) +
+  geom_point(data = zc_mb_peaks[2:3,], aes(x = month, y = fit),
+             size = 3, shape = 21, fill = "white", stroke = 1.5) +
+  scale_x_continuous(breaks = 1:12, labels = month.abb) +
+  # ylim(0, .2) + 
   theme_bw() +
   labs(x = NULL, 
        y = "Zc")
 
 ```
 
-Bb:
-
-```{r}
-bb_mb_mod <- gam(count ~ 
-                   s(month, bs = "cc", k = 12) +
-                   s(year, bs = "re"),
-                 family = tw(link = "log"),
-                 data = bb_mb,
-                 method = "fREML")
-
-summary(bb_mb_mod)
-gam.check(bb_mb_mod)
-acf(residuals(bb_mb_mod))
-
-bb_mb_grid <- expand.grid(
-  month = seq(0, 13, by = 0.1),   # extend beyond 1-12
-  year  = 0)
-
-pred <- predict(bb_mb_mod,
-                newdata = bb_mb_grid,
-                exclude = "s(year)",
-                newdata.guaranteed = TRUE,
-                type = "link",
-                se.fit = TRUE)
-
-bb_mb_grid <- bb_mb_grid %>%
-  mutate(
-    fit = exp(pred$fit),
-    lwr = exp(pred$fit - 1.96 * pred$se.fit),
-    upr = exp(pred$fit + 1.96 * pred$se.fit)
-  ) %>% 
-  mutate(across(fit:upr, \(x) x / pracma::trapz(month, fit), .names = "{.col}_norm"))
-
-bb_mb_peaks <-  find_peaks(bb_mb_grid)
-bb_mb_peaks$fit_norm <- bb_mb_peaks$fit / pracma::trapz(bb_mb_grid$month, bb_mb_grid$fit)
-
-# Clip grid back to 1-12 for plotting
-bb_mb_norm_plot <- ggplot(bb_mb_grid %>% filter(month >= 1, month <= 12), 
-       aes(x = month, y = fit_norm)) +
-   geom_ribbon(aes(ymin = lwr_norm, ymax = upr_norm), alpha = 0.2, color = NA) +
-  geom_line(linewidth = 1) +
-  geom_point(data = bb_mb_peaks, aes(x = month, y = fit_norm),
-             size = 3, shape = 21, fill = "white", stroke = 1.5) +
-  scale_x_continuous(breaks = 1:12, labels = month.abb) +
-  theme_bw() +
-  labs(x = NULL, 
-       y = "Bb")
-
-```
-
-All plots together:
+Both plots together:
 
 ```{r}
 
-plot_grid(zc_raw_plot, zc_mb_norm_plot, 
-          bb_raw_plot, bb_mb_norm_plot, 
-          nrow = 2, ncol = 2, 
+plot_grid(zc_raw_plot, zc_mb_plot, 
+          nrow = 2, 
           align = "h")
+
+ggsave("figs/mb_zc.svg", width = 4, height = 4)
 ```
 
 ### BEUTI in Monterey Bay
@@ -237,8 +193,18 @@ mb_beuti_grid %>%
   geom_line() + 
   theme_classic() +
   scale_x_continuous(breaks = 1:12) + 
+  geom_vline(xintercept = zc_mb_peaks[2:3,]$month, 
+             color = "tomato", 
+             linetype = "dashed") + 
   ylim(0, 20) + 
   ggtitle("Monterey Bay")
+
+ggsave("figs/mb_beuti.svg", width = 2.8, height = 2.5)
+
+# Peak lasts 1.5 months
+sum(mb_beuti_grid$beuti > 0.9 * max(mb_beuti_grid$beuti)) * 0.1
+mb_beuti_grid$month[which.max(mb_beuti_grid$beuti)]
+
 ```
 
 ### Curve simulation
@@ -255,43 +221,26 @@ Zc:
 ```{r}
 ### Zc ###
 
-Xp_zc <- predict(zc_mb_mod, 
+Xp_zc <- predict(zc_mb_daily_mod, 
                  newdata = zc_mb_grid, 
                  type = "lpmatrix")
 coef_sims_zc <- MASS::mvrnorm(n_sim, 
-                              mu = coef(zc_mb_mod), 
-                              Sigma = vcov(zc_mb_mod))
+                              mu = coef(zc_mb_daily_mod), 
+                              Sigma = vcov(zc_mb_daily_mod))
 sim_curves_zc <- Xp_zc %*% t(coef_sims_zc)
-sim_curves_response_zc <- zc_mb_mod$family$linkinv(sim_curves_zc)
+sim_curves_response_zc <- zc_mb_daily_mod$family$linkinv(sim_curves_zc)
 boot_zc <- expand_grid(i = 1:nrow(zc_mb_grid), 
             j = 1:ncol(sim_curves_response_zc)) %>% 
   mutate(month = zc_mb_grid$month[i], 
          sim = j, 
          count = sim_curves_response_zc[cbind(i, j)]) %>% 
   select(-c(i, j)) 
-
-### Bb ###
-
-Xp_bb <- predict(bb_mb_mod, 
-                 newdata = bb_mb_grid, 
-                 type = "lpmatrix")
-coef_sims_bb <- MASS::mvrnorm(n_sim, 
-                              mu = coef(bb_mb_mod), 
-                              Sigma = vcov(bb_mb_mod))
-sim_curves_bb <- Xp_bb %*% t(coef_sims_bb)
-sim_curves_response_bb <- bb_mb_mod$family$linkinv(sim_curves_bb)
-boot_bb <- expand_grid(i = 1:nrow(bb_mb_grid), 
-            j = 1:ncol(sim_curves_response_bb)) %>% 
-  mutate(month = bb_mb_grid$month[i], 
-         sim = j, 
-         count = sim_curves_response_bb[cbind(i, j)]) %>% 
-  select(-c(i, j)) 
+#warning is because there is a year = 0 placeholder in the prediction grid; ok since exclusing the year smooth
 
 ### BEUTI ###
 Xp_beuti <- predict(beuti_clim_mod, newdata = mb_beuti_grid, type = "lpmatrix")
 coef_sims_beuti <- MASS::mvrnorm(n_sim, mu = coef(beuti_clim_mod), Sigma = vcov(beuti_clim_mod))
 sim_curves_beuti <- Xp_beuti %*% t(coef_sims_beuti)
-
 ```
 
 ### Calculating lags for each species.
@@ -328,44 +277,30 @@ ggplot(boot_peak_lag_zc, aes(peak_lag)) +
   geom_vline(xintercept = mean_peak_lag_zc, color = "red") + 
   ggtitle("Zc") + 
   theme_classic()
-```
 
-Bb:
+ggsave("figs/mb_lag.svg", width = 2.8, height = 2.5)
 
-```{r}
-boot_bb_peak <- boot_bb %>% 
-  group_by(sim) %>% 
-  summarize(peak_month_bb = month[which.max(count)])
+boot_peak_lag_zc %>% 
+  mutate(group = case_when(
+    between(peak_lag, 6, 8) ~ "primary peak",
+    peak_lag > 11 | peak_lag < 1 ~ "secondary peak",
+    .default = "non peak"
+  )) %>% 
+  group_by(group) %>% 
+  summarize(N = n()) %>% 
+  mutate(prop = N / sum(N))
 
-boot_peak_lag_bb <- left_join(boot_beuti_peak, boot_bb_peak, by = "sim") %>% 
-  mutate(peak_lag = peak_month_bb - peak_month_beuti, 
-         peak_lag = ifelse(peak_lag <= 0, peak_lag + 12, peak_lag)) 
-
-mean_peak_lag_bb <- CircStats::circ.mean(boot_peak_lag_bb$peak_lag * 2 * pi / 12) * 12 / 2 / pi
-ci_peak_lag_bb <- shortest_arc_ci(boot_peak_lag_bb$peak_lag)
-
-if (mean_peak_lag_bb < 0) mean_peak_lag_bb <- mean_peak_lag_bb + 12
-
-ggplot(boot_peak_lag_bb, aes(peak_lag)) + 
-  geom_histogram() + 
-  geom_vline(xintercept = mean_peak_lag_bb, color = "red") + 
-  ggtitle("Bb") + 
-  theme_classic()
+#in 52% of bootstrapped samples, the lag occured between months 6 and 8. In 27% of samples, the lag was approximately 0 (greater than 11 or less than 1). 
 ```
 
 ### Circular plot
 
 ```{r}
 # normalize each variable to 0-1
-zc_plot <- zc_mb %>% 
+zc_plot <- zc_mb_monthly %>% 
   group_by(month) %>%
   summarize(count = mean(count)) %>% 
   mutate(value = (count - min(count)) / (max(count) - min(count)))
-
-bb_plot <- bb_mb %>% 
-  group_by(month) %>%
-  summarize(count = mean(count))
-bb_plot$value <- (bb_plot$count - min(bb_plot$count)) / (max(bb_plot$count) - min(bb_plot$count))
 
 beuti_clim <- beuti %>% 
   group_by(latitude, month) %>% 
@@ -390,11 +325,6 @@ ggplot() +
            fill = "darkorange",
            alpha = 0.8,
            width = 0.9) +
-  geom_col(data = bb_plot,
-           aes(x = month, y = value),
-           fill = "violet",
-           alpha = 0.8,
-           width = 0.9) +
   geom_line(data = beuti_plot, 
             aes(x = month, y = value), 
             color = "steelblue", 
@@ -407,8 +337,10 @@ ggplot() +
   theme(axis.title = element_blank(),
         axis.text.y = element_blank(),
         panel.grid.minor = element_blank()) +
-  ggtitle("Monterey Bay Seasonal Patterns") + 
   labs(color = NULL)
+
+ggsave("figs/mb_circle.svg", width = 2.8, height = 2.5)
+
 ```
 
 # Zc presence across CA Current
@@ -474,14 +406,16 @@ scb_norm_plot <- ggplot(scb_bw_grid %>% filter(month >= 1, month <= 12),
              size = 3, shape = 21, fill = "white", stroke = 1.5) +
   scale_x_continuous(breaks = 1:12, labels = month.abb) +
   theme_bw() +
-  theme(legend.position = "none") +
-  labs(x = NULL, y = "Zc") 
+  theme(legend.position = "none") + 
+  labs(x = NULL, 
+       y = NULL)
 ```
 
 ### SRI GAM
 
 ```{r}
-sri_zc <- read.csv(here::here("data/processed_bw/zc_sri.csv"))
+sri_zc <- read_csv(here::here("data/processed_bw/zc_sri.csv"))
+sri_zc_daily <- read_csv("data/processed_bw/zc_sri_daily.csv")
 
 sri_zc_raw_plot <- ggplot(sri_zc, aes(factor(month), mins_eff_adj)) +
   geom_col(aes(fill = factor(year))) +
@@ -490,12 +424,13 @@ sri_zc_raw_plot <- ggplot(sri_zc, aes(factor(month), mins_eff_adj)) +
   scale_x_discrete(limits = factor(1:12), labels = month.abb) +
   theme_bw()
 
+#FIX THIS BACK TO CLICK POS MINUTES
 sri_mod <- gam(mins_eff_adj ~ 
-                   s(month, bs = "cc", k = 12) +
-                   s(year, bs = "re"),
-                 family = tw(link = "log"),
-                 data = sri_zc,
-                 method = "fREML")
+                 s(month, bs = "cc", k = 12) +
+                 s(year, bs = "re"),
+               family = tw(link = "log"),
+               data = sri_zc,
+               method = "REML")
 
 sri_grid <- expand.grid(
   month = seq(0, 13, by = 0.1),   # extend beyond 1-12
@@ -529,28 +464,37 @@ sri_norm_plot <- ggplot(sri_grid %>% filter(month >= 1, month <= 12),
   scale_x_continuous(breaks = 1:12, labels = month.abb) +
   theme_bw() +
   labs(x = NULL, 
-       y = "Zc")
+       y = NULL)
 ```
 
 ### OR GAM
 
 ```{r}
-or_zc <- read.csv(here::here("data/processed_bw/zc_or.csv"))
+or_zc_monthly <- read.csv(here::here("data/processed_bw/zc_or.csv"))
+or_zc <- read.csv(here::here("data/processed_bw/zc_or_daily.csv"))
+or_zc <- or_zc %>% 
+  group_by(month, year) %>% 
+  mutate(count = sum(present))
 
-#no recording in may
-or_zc_raw_plot <- ggplot(or_zc, aes(factor(month), days_eff_adj)) +
-  geom_col(aes(fill = factor(year))) +
+or_raw_plot <- ggplot(or_zc, aes(month, count)) +
+  geom_area(aes(fill = factor(year))) +
+  scale_fill_manual(values = c("deeppink4", "violetred2")) + 
   labs(x = "Month", 
-       y = "Zc presence (days)") +
-  scale_x_discrete(limits = factor(1:12), labels = month.abb) +
-  theme_bw()
+       y = "Zc (days)") +
+  scale_x_continuous(breaks = 1:12, minor_breaks = NULL) +
+  theme_bw() +
+  theme(legend.position = "inside",
+        legend.position.inside = c(0.01, 0.99),
+        legend.justification = c(0, 1),
+        legend.title = element_blank(),
+        legend.background = element_rect(fill = NA))
 
-or_mod <- gam(days_eff_adj ~ 
-                    s(month, bs = "cc", k = 10) + #adjusted from 12 - make sure is ok
+or_mod <- gam(present ~ 
+                    s(month, bs = "cc", k = 10) + 
                     s(year, bs = "re"),
-                  family = tw(link = "log"),
+                  family = binomial(link = "logit"),
                   data = or_zc,
-                  method = "fREML")
+                  method = "REML")
 
 
 or_grid <- expand.grid(
@@ -566,9 +510,9 @@ pred <- predict(or_mod,
 
 or_grid <- or_grid %>%
   mutate(
-    fit = exp(pred$fit),
-    lwr = exp(pred$fit - 1.96 * pred$se.fit),
-    upr = exp(pred$fit + 1.96 * pred$se.fit)
+    fit = plogis(pred$fit),
+    lwr = plogis(pred$fit - 1.96 * pred$se.fit),
+    upr = plogis(pred$fit + 1.96 * pred$se.fit)
   ) %>% 
   mutate(across(fit:upr, \(x) x / pracma::trapz(month, fit), .names = "{.col}_norm"))
 
@@ -585,7 +529,26 @@ or_norm_plot <- ggplot(or_grid %>% filter(month >= 1, month <= 12),
   scale_x_continuous(breaks = 1:12, labels = month.abb) +
   theme_bw() +
   labs(x = NULL, 
+       y = NULL)
+
+# Clip grid back to 1-12 for plotting
+or_plot <- ggplot(or_grid %>% filter(month >= 1, month <= 12), 
+       aes(x = month, y = fit)) +
+   geom_ribbon(aes(ymin = lwr, ymax = upr), alpha = 0.2, color = NA) +
+  geom_line(linewidth = 1) +
+  geom_point(data = first(or_peaks), aes(x = month, y = fit),
+             size = 3, shape = 21, fill = "white", stroke = 1.5) +
+  scale_x_continuous(breaks = 1:12, labels = month.abb) +
+  theme_bw() +
+  labs(x = NULL, 
        y = "Zc")
+
+
+plot_grid(or_raw_plot, or_plot, 
+          nrow = 2, 
+          align = "h")
+
+ggsave("figs/or_zc.svg", width = 4, height = 4)
 ```
 
 ### WA GAM
@@ -644,7 +607,7 @@ wa_norm_plot <- ggplot(wa_grid %>% filter(month >= 1, month <= 12),
   scale_x_continuous(breaks = 1:12, labels = month.abb) +
   theme_bw() +
   labs(x = NULL, 
-       y = "Zc")
+       y = NULL)
 
 ```
 
@@ -702,7 +665,7 @@ goa_norm_plot <- ggplot(goa_grid %>% filter(month >= 1, month <= 12),
   scale_x_continuous(breaks = 1:12, labels = month.abb) +
   theme_bw() +
   labs(x = NULL, 
-       y = "Zc")
+       y = NULL)
 ```
 
 ### Circular plots
@@ -876,17 +839,19 @@ all_gams_zc <- plot_grid(goa_norm_plot, wa_norm_plot,
           sri_norm_plot, scb_norm_plot, 
           nrow = 6)
 
-ggsave("figs/all_zc_gams.svg", all_gams_zc, width = 3, height = 9)
+ggsave("figs/all_zc_gams.svg", all_gams_zc, width = 2.25, height = 6.6)
 
-or_wa_ak <- plot_grid(goa_circ, wa_circ, or_circ,
-                      ncol = 1)
-
-ggsave("figs/or_wa_ak.svg", or_wa_ak, height = 7)
-
-ca <- plot_grid(mb_circ, sri_circ, scb_circ, 
-          ncol = 1)
-          
-ggsave("figs/ca.svg", ca, height = 7)
+all_circle_zc <- plot_grid(goa_circ, wa_circ, 
+          or_circ, mb_circ, 
+          sri_circ, scb_circ, 
+          nrow = 6)
+# 
+# ggsave("figs/or_wa_ak.svg", or_wa_ak, height = 7)
+# 
+# ca <- plot_grid(mb_circ, sri_circ, scb_circ, 
+#           ncol = 1)
+#           
+# ggsave("figs/ca.svg", ca, height = 7)
 
 ```
 
@@ -955,7 +920,7 @@ bw_map <- ggplot() +
           colour = "grey60", 
           linewidth = 0.2) +  
   coord_sf(
-    xlim   = c(-145, -115),
+    xlim   = c(-144, -117.5),
     ylim   = c(31, 60),
     expand = FALSE
   ) + 
@@ -991,155 +956,163 @@ bw_map <- ggplot() +
             nudge_y = 0.4, 
             nudge_x = 0.5, 
             size = 2.5) +
-  labs(x = "Latitude", y = "Longitude") + 
-  theme_minimal(14) + 
+  # labs(x = "Latitude", y = "Longitude") + 
+  theme_minimal(12) + 
   theme(legend.position = "inside",
         legend.position.inside = c(0.98, 0.98),
         legend.justification = c(1, 1), 
         legend.background = element_rect(fill = "white"))
 
 bw_map
-ggsave("output/zc_map.svg", bw_map, width = 6, height = 9)
+ggsave("figs/zc_map.svg", bw_map, width = 4, height = 8)
 ```
 
-# Bb presence across CA Current
+```         
+```
 
-### GoA
+## Oregon lag analysis
 
 ```{r}
-goa_bb <- read.csv(here::here("data/other_sites/GoA/Bb_slope_GoA.csv"), 
-                   col.names = c("month", "weekly_mins")) %>% 
-  mutate(month = floor(month) + 1, 
-         weekly_mins = pmax(weekly_mins, 0)) %>% 
-  group_by(month) %>% 
-  summarize(bb_mins = sum(weekly_mins))
+Xp_zc_or <- predict(or_mod, 
+                 newdata = or_grid, 
+                 type = "lpmatrix")
+coef_sims_zc_or <- MASS::mvrnorm(n_sim, 
+                              mu = coef(or_mod), 
+                              Sigma = vcov(or_mod))
+sim_curves_zc_or <- Xp_zc_or %*% t(coef_sims_zc_or)
+sim_curves_response_zc_or <- or_mod$family$linkinv(sim_curves_zc_or)
+boot_zc_or <- expand_grid(i = 1:nrow(or_grid), 
+            j = 1:ncol(sim_curves_response_zc_or)) %>% 
+  mutate(month = or_grid$month[i], 
+         sim = j, 
+         count = sim_curves_response_zc_or[cbind(i, j)]) %>% 
+  select(-c(i, j)) 
 
-goa_bb_raw_plot <- ggplot(goa_bb, aes(month, bb_mins)) + 
-  geom_col() + 
-  geom_smooth() + 
-    labs(x = "Month", 
-       y = "Bb presence (avg mins)") +
-  theme_minimal()
+##beuti setup for oregon##
+beuti_or <- read_csv(here::here("data/indices/BEUTI_06-25.csv")) %>% 
+  set_names(c("date", "latitude", "beuti")) %>% 
+  filter(latitude == 45) %>% 
+  mutate(month = month(date), 
+         year = year(date))
 
-goa_mod_bb <- gam(bb_mins ~ 
-                s(month, bs = "cc", k = 12), #adjusted from 12 - make sure is ok
-              family = tw(link = "log"),
-              data = goa_bb,
-              method = "fREML")
+#climatology to get at the long term average
+beuti_clim_mod_or <- gam(beuti ~ 
+                        s(month, bs = "cc", k = 12) +
+                        s(year, bs = "re"),
+                      family = gaussian(),
+                      data = beuti_or,
+                      method = "REML")
 
-goa_grid_bb <- expand.grid(
+or_beuti_grid <- expand.grid(
   month = seq(0, 13, by = 0.1),   # extend beyond 1-12
   year  = 0)
 
-pred <- predict(goa_mod_bb,
-                newdata = goa_grid_bb,
+pred <- predict(beuti_clim_mod_or,
+                newdata = or_beuti_grid,
+                exclude = "s(year)",
                 newdata.guaranteed = TRUE,
                 type = "link",
                 se.fit = TRUE)
 
-goa_grid_bb <- goa_grid_bb %>%
-  mutate(
-    fit = exp(pred$fit),
-    lwr = exp(pred$fit - 1.96 * pred$se.fit),
-    upr = exp(pred$fit + 1.96 * pred$se.fit)
-  ) %>% 
-  mutate(across(fit:upr, \(x) x / pracma::trapz(month, fit), .names = "{.col}_norm"))
+or_beuti_grid$beuti <- pred$fit
+or_beuti_grid$lower <- pred$fit - pred$se.fit * 1.96
+or_beuti_grid$upper <- pred$fit + pred$se.fit * 1.96
 
-goa_peaks_bb <-  find_peaks(goa_grid_bb)
-goa_peaks_bb$fit_norm <- goa_peaks_bb$fit / pracma::trapz(goa_grid_bb$month, goa_grid_bb$fit)
+or_beuti_grid %>% 
+  filter(between(month, 1, 12)) %>% 
+  ggplot(aes(month, beuti)) + 
+  geom_ribbon(aes(ymin = lower, ymax = upper), alpha = 0.2) +
+  geom_line() + 
+  theme_classic() +
+  scale_x_continuous(breaks = 1:12) + 
+  geom_vline(xintercept = or_peaks$month, 
+             color = "tomato", 
+             linetype = "dashed") + 
+  ggtitle("Oregon")
 
-# Clip grid back to 1-12 for plotting
-goa_norm_plot_bb <- ggplot(goa_grid_bb %>% filter(month >= 1, month <= 12), 
-       aes(x = month, y = fit_norm)) +
-   geom_ribbon(aes(ymin = lwr_norm, ymax = upr_norm), alpha = 0.2, color = NA) +
-  geom_line(linewidth = 1) +
-  geom_point(data = last(goa_peaks_bb), aes(x = month, y = fit_norm),
-             size = 3, shape = 21, fill = "white", stroke = 1.5) +
-  scale_x_continuous(breaks = 1:12, labels = month.abb) +
-  theme_bw() +
-  labs(x = NULL, 
-       y = "Bb")
+ggsave("figs/or_beuti.svg", width = 2.8, height = 2.5)
+
+# Peak lasts 2.3 months
+sum(or_beuti_grid$beuti > 0.9 * max(or_beuti_grid$beuti)) * 0.1
+or_beuti_grid$month[which.max(or_beuti_grid$beuti)]
+
+
+### BEUTI curve sim ###
+Xp_beuti_or <- predict(beuti_clim_mod_or, newdata = or_beuti_grid, type = "lpmatrix")
+coef_sims_beuti_or <- MASS::mvrnorm(n_sim, mu = coef(beuti_clim_mod_or), Sigma = vcov(beuti_clim_mod_or))
+sim_curves_beuti_or <- Xp_beuti_or %*% t(coef_sims_beuti_or)
+
+#calculating lags
+boot_beuti_or <- expand_grid(i = 1:nrow(or_beuti_grid), 
+            j = 1:ncol(sim_curves_beuti_or)) %>% 
+  mutate(month = or_beuti_grid$month[i], 
+         sim = j, 
+         beuti = sim_curves_beuti_or[cbind(i, j)]) %>% 
+  select(-c(i, j)) 
+
+boot_beuti_peak_or <- boot_beuti_or %>% 
+  group_by(sim) %>% 
+  summarize(peak_month_beuti = month[which.max(beuti)])
+
+boot_zc_peak_or <- boot_zc_or %>% 
+  group_by(sim) %>% 
+  summarize(peak_month_zc = month[which.max(count)])
+
+boot_peak_lag_zc_or <- left_join(boot_beuti_peak_or, boot_zc_peak_or, by = "sim") %>% 
+  mutate(peak_lag = peak_month_zc - peak_month_beuti, 
+         peak_lag = ifelse(peak_lag <= 0, peak_lag + 12, peak_lag)) 
+
+mean_peak_lag_zc_or <- CircStats::circ.mean(boot_peak_lag_zc_or$peak_lag * 2 * pi / 12) * 12 / 2 / pi
+ci_peak_lag_zc_or <- shortest_arc_ci(boot_peak_lag_zc_or$peak_lag)
+
+if (mean_peak_lag_zc_or < 0) mean_peak_lag_zc_or <- mean_peak_lag_zc_or + 12
+
+ggplot(boot_peak_lag_zc_or, aes(peak_lag)) + 
+  geom_histogram() + 
+  geom_vline(xintercept = mean_peak_lag_zc_or, color = "red") + 
+  ggtitle("Zc") + 
+  theme_classic()
+
+ggsave("figs/or_lag.svg", width = 2.8, height = 2.5)
+
 ```
 
-Map
+Or circle plot
 
 ```{r}
-sites_bb <- data.frame(
-  name = c("San Diego", 
-           "Monterey", 
-           "Gulf of Alaska"), 
-  lon = c(-119.176167,  
-          -122.186833,  
-          -142.616667), 
-  lat = c(32.846000, 
-          36.712500,  
-          56.216667)
-)
+# normalize each variable to 0-1
+beuti_clim_or <- beuti_or %>% 
+  group_by(latitude, month) %>% 
+  summarize(beuti = mean(beuti))
 
-bb_map <- ggplot() + 
-  #bathymetry
-  geom_raster(data = filter(bathy_df, z <= 0), 
-              aes(x, y, fill = z), 
-              interpolate = TRUE) + 
-  geom_sf(data = bw_graticule,
-          color = "grey90",
-          alpha = 0.2,
-          linewidth = 0.5) +
-  scale_fill_gradientn(
-    colours  = c("#08306b", "#2171b5", "#6baed6", "#c6dbef"),
-    values   = scales::rescale(c(-6000, -2000, -200, 0)),
-    name     = "Depth (m)",
-    na.value = "grey80"
-  ) +
-  # Land + state borders
-  geom_sf(data = land,
-          fill = "grey75",
-          colour = NA) +
-  geom_sf(data = states, 
-          fill = NA, 
-          colour = "grey60", 
-          linewidth = 0.2) +  
-  coord_sf(
-    xlim   = c(-145, -115),
-    ylim   = c(31, 60),
-    expand = FALSE
-  ) + 
-  scale_x_continuous(breaks = seq(-145, -115, by = 5)) +
-  # Isobath contours
-  geom_contour(
-    data    = bathy_df,
-    aes(x, y, z = z),
-    breaks  = isobaths,
-    colour  = "lightblue", linewidth = 0.25, alpha = 0.6
-  ) + 
-  geom_point(data = sites_bb, 
-             aes(lon, lat), 
-             color = "white", 
-             size = 2, 
-             inherit.aes = FALSE) +
-  geom_hline(yintercept = c(32.8, 
-                            36.67, 
-                            56.25), 
-             color = "white", 
-             linetype = "dashed") + 
-  annotate("text", x = -137, y = c(33.1, 
-                                   37, 
-                                   56.5),
-         label = c("32.8°N", 
-                   "36.6°N",  
-                   "56°N"),
-         colour = "white", size = 2.5, hjust = 1) + 
-  geom_text(data = sites_bb,
-            aes(x = lon, y = lat, label = name),
-            fontface = "bold",
-            color = "white",
-            nudge_y = 0.4, 
-            nudge_x = 0.5, 
-            size = 2.5) +
-  labs(x = "Latitude", y = "Longitude") + 
-  theme_minimal(14) + 
-  theme(legend.position = "inside",
-        legend.position.inside = c(0.98, 0.98),
-        legend.justification = c(1, 1), 
-        legend.background = element_rect(fill = "white"))
+beuti_plot_or <- beuti_clim_or %>% 
+  mutate(value = (beuti - min(beuti)) / (max(beuti) - min(beuti)))
+
+or_circ_large <- ggplot() +
+    geom_rect(data = brooding %>% filter(brooding == 1),
+            aes(xmin = month - .5, xmax = month + .5,
+                ymin = 0, ymax = 1),
+            fill = "darkred", alpha = 0.2,
+            inherit.aes = FALSE) +
+  geom_col(data = zc_plot_or,
+           aes(x = month, y = value),
+           fill = "darkorange",
+           alpha = 0.8,
+           width = 0.9) +
+  scale_x_continuous(breaks = 1:12, 
+                     labels = month.abb) +
+  geom_line(data = beuti_plot_or, 
+            aes(x = month, y = value), 
+            color = "steelblue", 
+            linewidth = 1) +
+  coord_polar(start = -pi/12) +
+  ylim(0, 1) +
+  theme_minimal() +
+  theme(axis.title = element_blank(),
+        axis.text.y = element_blank(),
+        panel.grid.minor = element_blank()) +
+  labs(color = NULL)
+
+ggsave("figs/or_circle.svg", width = 2.8, height = 2.5)
+
 ```
